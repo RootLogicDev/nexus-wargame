@@ -16,3 +16,4 @@ To launch the lab, run the following command in your terminal:
 wget [https://raw.githubusercontent.com/YOUR_USERNAME/nexus-wargame/main/nexus.sh](https://raw.githubusercontent.com/YOUR_USERNAME/nexus-wargame/main/nexus.sh)
 bash nexus.sh setup
 bash nexus.sh play
+Type submit <password> to complete level
