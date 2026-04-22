@@ -1,6 +1,6 @@
 # nexus-wargame
 
-# ⚡ NEXUS WARGAME v3.0
+# ⚡ NEXUS WARGAME v1.0
 > **Operation: Zero Day** — A Hardened Offensive Security Lab.
 
 NEXUS is a mobile-friendly, infrastructure-focused CTF designed to take you from a script kiddie to a professional security researcher. 
