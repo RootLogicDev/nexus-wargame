@@ -100,7 +100,7 @@ banner() {
  ██║ ╚████║███████╗██╔╝ ██╗╚██████╔╝███████║
  ╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝
 BANNER
-    echo -e "${D}          OPERATION: ZERO DAY  v${VERSION}${N}"
+    echo -e "${D}          OPERATION: ZERO DAY - BY JOHNALEX v${VERSION}${N}"
     echo -e "${R}───────────────────────────────────────────${N}\n"
 }
 
