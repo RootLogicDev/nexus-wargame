@@ -1,42 +1,126 @@
-# NEXUS WARGAME Documentation
+# 🔴 NEXUS WARGAME v1.0 — Operation: Zero Day
 
-## Quick Start
-- Clone the repository: `git clone https://github.com/RootLogicDev/nexus-wargame.git`
-- Navigate to the project folder: `cd nexus-wargame`
-- Install dependencies: `npm install`
-- Run the game: `npm start`
+> A hardened terminal-based cybersecurity wargame designed to simulate real-world attack workflows.
 
-## Features
-- Dynamic level system with multiple stages.
-- Comprehensive scoring mechanism to track achievements.
-- Implemented anti-cheat measures to ensure fair play.
+---
 
-## Installation
-To install NEXUS WARGAME, follow the steps below:
-1. Ensure you have Node.js installed on your machine.
-2. Clone this repository using the command mentioned above.
-3. Install the necessary dependencies by running `npm install`.
-4. Start the server with `npm start` to run the game.
+## ⚡ Overview
 
-## How It Works
+NEXUS WARGAME is a 20-level offensive security training environment that forces you to think like an operator.
 
-### Game Engine
-NEXUS WARGAME is built on a powerful JS game engine that allows for real-time multiplayer interactions. The game is structured to support various game mechanics seamlessly. 
+No hand-holding. No predictable puzzles.
 
-### Level Progression
-Players advance through different levels by completing challenges. Each level presents unique obstacles and enemies that increase in difficulty.
+You will:
+- Enumerate systems
+- Extract hidden credentials
+- Decode and analyze data
+- Chain commands into solutions
+- Operate under time pressure
 
-### Scoring System
-The scoring system is designed to reward players for achievements and quick completions. Players earn points based on accuracy, speed, and the number of challenges completed.
+---
 
-### Achievements
-Unlock a variety of achievements by reaching specific milestones in gameplay. Achievements can range from completing levels quickly to mastering special challenges.
+## 🧠 Why This Exists
 
-### Command Reference
-- `start`: Begins the game.
-- `pause`: Pauses the game.
-- `resume`: Resumes the game from a paused state.
-- `quit`: Ends the game session.
+Most beginner wargames teach commands.
 
-### Anti-Cheat Mechanisms
-The game includes several anti-cheat systems that monitor gameplay for suspicious activities. Players found cheating are flagged and subjected to penalties, ensuring a fair gaming environment.
+NEXUS trains:
+- **Decision making under noise**
+- **Pattern recognition**
+- **Tool chaining**
+- **Realistic problem solving**
+
+This is closer to real-world scenarios than typical CTF-style tasks.
+
+---
+
+## 🎯 Skills Covered
+
+- Linux enumeration
+- File analysis & identification
+- Log parsing & pattern extraction
+- Encoding/decoding (Base64, ROT13, binary artifacts)
+- Privilege escalation concepts (SUID, cron, env leaks)
+- Networking basics (Netcat, local services)
+- Command pipelines (`grep`, `cut`, `sort`, `uniq`)
+
+---
+
+## 🚀 Installation
+
+```bash
+git clone https://github.com/yourname/nexus-wargame
+cd nexus-wargame
+
+
+▶️ Usage
+Bash
+bash wargame.sh setup       # Build environment (run once)
+bash wargame.sh play        # Start / continue
+bash wargame.sh play --timed  # Timed mode
+bash wargame.sh status      # View progress
+bash wargame.sh leaderboard # View top scores
+bash wargame.sh report      # Export completion report
+bash wargame.sh reset       # Reset progress
+
+🖥 Supported Platforms
+Termux (Android)
+Kali Linux
+Ubuntu / Debian
+Arch Linux
+
+🎮 In-Game Commands
+Inside the game terminal:
+
+objective      View mission objective
+story          View narrative context
+hint           Get next hint (costs points)
+submit <pw>    Submit answer
+score          Show current score
+achievements   View unlocked achievements
+exit           Return to main menu
+
+🏆 Progression System
+20 Levels (increasing difficulty)
+Dynamic scoring (efficiency matters)
+Achievement system
+Speedrun mode
+Rank System
+S-RANK — Elite
+A-RANK — Expert
+B-RANK — Proficient
+C-RANK — Developing
+D-RANK — Beginner
+
+🧩 Example Challenges
+Identify valid files among decoys
+Extract credentials from logs
+Decode encoded payloads
+Analyze binary data
+Discover hidden files
+Interact with local network services
+Build multi-step command pipelines
+
+⚠️ Requirements
+Make sure these are installed:
+Bash
+coreutils
+bzip2
+gawk
+netcat      # required for networking level
+binutils    # for strings command
+🧠 Design Philosophy
+Real skill comes from filtering noise, identifying patterns, and chaining simple tools into effective solutions.
+
+📜 License
+MIT License
+⭐ Support
+If you find this project useful or challenging:
+⭐ Star the repository
+🍴 Fork and improve it
+🐛 Report issues
+
+🔥 Roadmap
+Online leaderboard
+Additional advanced levels
+Red-team simulation scenarios
+Web-based interface
