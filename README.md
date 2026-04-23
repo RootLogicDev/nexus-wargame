@@ -1,4 +1,47 @@
-# 🔴 NEXUS WARGAME v1.0 — Operation: Zero Day
+# 🔴 NEXUS WARGAME v1.1.1 — Operation: Zero Day
+
+---
+
+## 🚀 Latest Update — v1.1.1 (Integrity & Stability Upgrade)
+
+This update focuses on strengthening the internal reliability and security of the system.
+
+### 🔒 Core Improvements
+
+- **State Integrity Enforcement**
+  - Added checksum validation to prevent corrupted or tampered progress data
+
+- **Execution Safety Guards**
+  - Protected destructive operations (`rm -rf`) with path validation
+  - Prevents accidental or unsafe file deletion
+
+- **Cross-Platform Time Handling**
+  - Replaced non-portable `date -d` usage
+  - Ensures consistent timing across Termux and Linux environments
+
+- **Signal Handling (Stability)**
+  - Added `SIGINT` (Ctrl+C) trap
+  - Prevents state corruption during forced exits
+
+---
+
+### 🧠 Why This Matters
+
+These changes transform the system from a basic script into a **controlled and resilient training environment**.
+
+- More stable execution  
+- Reduced risk of corruption  
+- Stronger anti-tamper behavior  
+- Consistent performance across platforms  
+
+---
+
+### ⚠️ Note
+
+This update does **not** add new levels.  
+It strengthens the **core engine** to support upcoming advanced features in future versions.
+
+---
 
 > A hardened terminal-based cybersecurity wargame designed to simulate real-world attack workflows.
 
@@ -124,3 +167,4 @@ Online leaderboard
 Additional advanced levels
 Red-team simulation scenarios
 Web-based interface
+
