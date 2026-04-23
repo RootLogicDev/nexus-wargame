@@ -104,6 +104,7 @@ bash wargame.sh status        # View progress
 bash wargame.sh leaderboard   # View scores
 bash wargame.sh report        # Export report
 bash wargame.sh reset         # Reset progress
+bash wargame.sh verify        # verify installation
 ```
 ## 🖥 Supported Platforms
 Termux (Android)
