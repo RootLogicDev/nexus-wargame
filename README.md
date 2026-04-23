@@ -48,6 +48,7 @@ It reinforces the **core engine** for future upgrades.
 git clone https://github.com/RootLogicDev/nexus-wargame
 cd nexus-wargame
 bash wargame.sh
+```
 
 ## ⚡ Overview
 
