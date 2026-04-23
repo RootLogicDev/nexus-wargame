@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# NEXUS WARGAME v3.0 — Operation: Zero Day  (HARDENED)
+# NEXUS WARGAME v1.0 — Operation: Zero Day  (HARDENED)
 # 20 levels | Cross-platform | Live timer | Realistic challenges
 #
 # Verified platforms: Termux (Android), Kali, Ubuntu, Debian, Arch
