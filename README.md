@@ -24,7 +24,6 @@ This update focuses on strengthening the internal reliability and security of th
   - Prevents state corruption during forced exits
 
 ---
-
 ### 🧠 Why This Matters
 
 These changes transform the system from a basic script into a **controlled and resilient training environment**.
@@ -42,6 +41,12 @@ This update does **not** add new levels.
 It strengthens the **core engine** to support upcoming advanced features in future versions.
 
 ---
+## ⚡ Quick Start
+
+```bash
+git clone https://github.com/yourusername/nexus-wargame
+cd nexus-wargame
+bash wargame.sh
 
 > A hardened terminal-based cybersecurity wargame designed to simulate real-world attack workflows.
 
