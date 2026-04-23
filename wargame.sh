@@ -3,7 +3,7 @@
 # NEXUS WARGAME v1.1.1 — Operation: Zero Day  (INTEGRITY ENFORCED)
 # 20 levels | Cross-platform | Time authority | Anti-tamper | Persistent hints
 #
-# [v1.1.1 FIXES]
+# [v1.1.1 FIXES].
 #  BUG-1  Dead code block removed from build_l07
 #  BUG-2  GNU date -d replaced with portable awk timestamps in build_l06
 #  BUG-3  L07 deterministic fill — zero probability of singleton decoys
