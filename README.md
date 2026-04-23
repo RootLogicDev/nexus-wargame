@@ -96,7 +96,7 @@ git clone https://github.com/RootLogicDev/nexus-wargame
 cd nexus-wargame
 ```
 ##▶️ Usage
-Bash
+```bash
 bash wargame.sh setup         # Build environment (run once)
 bash wargame.sh play          # Start / continue
 bash wargame.sh play --timed  # Timed mode
@@ -104,7 +104,7 @@ bash wargame.sh status        # View progress
 bash wargame.sh leaderboard   # View scores
 bash wargame.sh report        # Export report
 bash wargame.sh reset         # Reset progress
-
+```
 ##🖥 Supported Platforms
 Termux (Android)
 Kali Linux
