@@ -94,7 +94,7 @@ Most beginner wargames teach commands.
 ```bash
 git clone https://github.com/RootLogicDev/nexus-wargame
 cd nexus-wargame
-
+```
 ##▶️ Usage
 Bash
 bash wargame.sh setup         # Build environment (run once)
