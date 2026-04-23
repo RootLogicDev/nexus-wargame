@@ -95,7 +95,7 @@ Most beginner wargames teach commands.
 git clone https://github.com/RootLogicDev/nexus-wargame
 cd nexus-wargame
 ```
-##▶️ Usage
+## ▶️ Usage
 ```bash
 bash wargame.sh setup         # Build environment (run once)
 bash wargame.sh play          # Start / continue
@@ -105,13 +105,13 @@ bash wargame.sh leaderboard   # View scores
 bash wargame.sh report        # Export report
 bash wargame.sh reset         # Reset progress
 ```
-##🖥 Supported Platforms
+## 🖥 Supported Platforms
 Termux (Android)
 Kali Linux
 Ubuntu / Debian
 Arch Linux
 
-##🎮 In-Game Commands
+## 🎮 In-Game Commands
 Bash
 objective      View mission objective
 story          View narrative context
@@ -121,7 +121,7 @@ score          Show current score
 achievements   View unlocked achievements
 exit           Return to main menu
 
-##🏆 Progression System
+## 🏆 Progression System
 20 Levels (increasing difficulty)
 Dynamic scoring (efficiency matters)
 Achievement system
@@ -133,7 +133,7 @@ B-RANK — Proficient
 C-RANK — Developing
 D-RANK — Beginner
 
-##🧩 Example Challenges
+## 🧩 Example Challenges
 Identify valid files among decoys
 Extract credentials from logs
 Decode encoded payloads
@@ -142,7 +142,7 @@ Discover hidden files
 Interact with local services
 Build multi-step command pipelines
 
-##⚠️ Requirements
+## ⚠️ Requirements
 Bash
 bash
 coreutils
@@ -151,19 +151,19 @@ gawk
 netcat
 binutils
 
-##🧠 Design Philosophy
+## 🧠 Design Philosophy
 Real skill comes from filtering noise, identifying patterns, and chaining simple tools into effective solutions.
 
-##📜 License
+## 📜 License
 MIT License
 
-##⭐ Support
+## ⭐ Support
 If you find this useful:
 ⭐ Star the repository
 🍴 Fork it
 🐛 Report issues
 
-##🔥 Roadmap
+## 🔥 Roadmap
 Online leaderboard
 Advanced scenario chains
 Red-team simulations
