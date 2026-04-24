@@ -250,15 +250,22 @@ build_l02() {
 "The problem isn’t the command—it’s how the input is being interpreted." \
 "You need to force the shell to treat it explicitly as a file in the current directory."
 }
-
 build_l03() {
     mkl "03" "$1"
     local d="$LEVELS_DIR/level03/challenge"
+
     echo "$1"           > "$d/access code"
     echo "decoy_alpha"  > "$d/accesscode"
     echo "decoy_beta"   > "$d/access_code"
     echo "decoy_gamma"  > "$d/ACCESS_CODE"
     echo "decoy_delta"  > "$d/access.code"
+
+    # [UPGRADE] prevent ls from auto-quoting filenames (keeps challenge intact)
+    _nexus_ls() {
+        command ls --quoting-style=literal "$@" 2>/dev/null || command ls "$@"
+    }
+    alias ls='_nexus_ls'
+
     cat > "$d/MANIFEST" << 'LEOF'
 FILE MANIFEST
 =============
