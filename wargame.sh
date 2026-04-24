@@ -248,7 +248,7 @@ build_l02() {
 "NEGATIVE_SPACE\n\nA single character. A file that breaks commands.\nType 'cat -' and the terminal waits forever.\nSomething about how this file is named defeats the usual approach." \
 "What does a lone dash mean to most command-line programs?" \
 "You need to reference it as a filesystem path, not a flag name." \
-"Solution: cat ./-"
+"Solution: One of the most basic commands in Linux reveals file contents. If you’ve used it before, this should feel obvious."
 }
 
 build_l03() {
