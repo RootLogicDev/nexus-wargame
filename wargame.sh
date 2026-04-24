@@ -251,31 +251,29 @@ build_l02() {
 "You need to force the shell to treat it explicitly as a file in the current directory."
 }
 
+
 build_l03() {
     mkl "03" "$1"
     local d="$LEVELS_DIR/level03/challenge"
 
-    echo "$1"           > "$d/access code"
+    echo "$1"           > "$d/.access code"
     echo "decoy_alpha"  > "$d/accesscode"
     echo "decoy_beta"   > "$d/access_code"
     echo "decoy_gamma"  > "$d/ACCESS_CODE"
     echo "decoy_delta"  > "$d/access.code"
-
-    # [UPGRADE] enforce consistent ls output (no auto-quoting leaks, cross-platform safe)
-    alias ls='command ls -1'
 
     cat > "$d/MANIFEST" << 'LEOF'
 FILE MANIFEST
 =============
 Five data files present.
 One contains the credential.
-Its name contains a whitespace character.
-Standard argument passing will fail.
+It is not immediately visible.
+Standard listing will not reveal it.
 LEOF
 
     meta "03" \
 "One file in this directory behaves differently when you try to access it." \
-"WHITESPACE\n\nFive files. Four are noise.\nOne will break normal command behavior.\nThe shell is not interpreting your input the way you expect.\nControl how it reads your command." \
+"Some files are not visible using default listing methods." \
 "The issue isn’t the file—it’s how the command is interpreting what you typed." \
 "The shell separates arguments on spaces. This filename isn’t being treated as a single piece." \
 "You need a way to make the shell treat the entire name as one argument."
