@@ -246,9 +246,9 @@ build_l02() {
     meta "02" \
 "A file exists in this directory. It contains the password.\nA plain 'ls' shows it, but reading it is not straightforward." \
 "NEGATIVE_SPACE\n\nA single character. A file that breaks commands.\nType 'cat -' and the terminal waits forever.\nSomething about how this file is named defeats the usual approach." \
-"What does a lone dash mean to most command-line programs?" \
-"You need to reference it as a filesystem path, not a flag name." \
-"Solution: One of the most basic commands in Linux reveals file contents. If you’ve used it before, this should feel obvious."
+"One file in this directory doesn’t behave like the others when you try to read it." \
+"The problem isn’t the command—it’s how the input is being interpreted." \
+"You need to force the shell to treat it explicitly as a file in the current directory."
 }
 
 build_l03() {
@@ -270,9 +270,9 @@ LEOF
     meta "03" \
 "One file in this directory has a space in its name and contains the password.\nStandard argument syntax will fail. You must handle it correctly." \
 "WHITESPACE\n\nFive files. Four are noise.\nThe one you want has a space in its name — invisible to casual eyes.\nThe shell will misinterpret it unless you force it otherwise.\nQuote or escape. Control the parser." \
-"How does bash tokenize filenames with spaces when passed as arguments?" \
-"Two approaches: wrap in quotes, or escape the space with a backslash (\\)" \
-"Solution: cat \"access code\"    OR    cat access\\ code"
+"The issue isn’t the file—it’s how the command is interpreting what you typed." \
+"The shell separates arguments on spaces. This filename isn’t being treated as a single piece." \
+"You need a way to make the shell treat the entire name as one argument."
 }
 
 build_l04() {
@@ -296,9 +296,9 @@ LEOF
     meta "04" \
 "Multiple hidden files exist. Only one contains a valid 20-character access code.\nFind and enumerate all hidden files, then identify and read the correct one." \
 "SPECTER\n\nThe obvious files are noise. The secrets have dots before their names.\nBut not every dot-file holds truth — some are expired, some are decoys.\nLook at them all. Read what you find. Submit what looks right." \
-"What ls flag reveals ALL files including those starting with '.' ?" \
-"ls -la shows everything. Hidden files start with a dot. Read each one." \
-"Solution: ls -la    read all dot-files    .classified contains the active credential"
+"Not everything in a directory is visible by default." \
+"Some files are intentionally hidden and require a different way of listing directory contents." \
+"If you think you've seen everything, you haven't."
 }
 
 build_l05() {
@@ -317,9 +317,9 @@ build_l05() {
     meta "05" \
 "Ten files. Nine are binary data that will corrupt your terminal if read directly.\nOne contains the password as readable ASCII text.\nIdentify it without opening each file manually." \
 "FORENSICS\n\nTen files. Nine are noise — raw binary that will destroy your terminal.\nOne carries a clean signal. Opening each manually is not viable.\nIdentify before you read. Tools exist for exactly this purpose." \
-"Is there a command that identifies what a file IS based on its internal content, not its name?" \
-"'file' reads magic bytes (the first bytes of a file) and reports its type accurately." \
-"Solution: file data*    — look for the one reporting 'ASCII text'    then cat it"
+"Filenames can be misleading. What matters is what the data actually is." \
+"Some files here may not be readable as plain text, even if they look similar." \
+"Identify which file contains meaningful human-readable content, then inspect it."
 }
 
 # [BUG-2 FIX] GNU date -d replaced with portable awk timestamp generation
@@ -382,9 +382,9 @@ build_l07() {
     meta "07" \
 "Find the one line in frequency.dat that is unique — appears exactly once.\nAll other lines repeat. Filter the noise." \
 "FREQUENCY\n\nRepeated noise. One clean signal.\nThe data is shuffled — tools that need sorted input will fail\nunless you give them sorted input first.\nTwo commands. One pipe." \
-"What flag for 'uniq' outputs only lines appearing exactly once?" \
-"uniq -u requires SORTED input to work correctly. Sort first, then filter." \
-"Solution: sort frequency.dat | uniq -u"
+"The data contains repetition—but one entry does not follow the pattern." \
+"You need a way to filter out duplicates and isolate what appears only once." \
+"Be careful: some tools only work correctly when the input is in the right order."
 }
 
 build_l08() {
@@ -401,9 +401,9 @@ LEOF
     meta "08" \
 "Decode the file 'payload.dat' to find the password.\nThe data is encoded — determine the encoding scheme first." \
 "DECODE_ALPHA\n\nA payload from an authenticated channel.\nNot encrypted. Just wrapped.\nThe encoding scheme leaves fingerprints — look at the character set and structure." \
-"Examine the file: cat payload.dat    What characters do you see? Any padding?" \
-"Alphanumeric + / + = padding at end = base64 encoding.    Decode: base64 -d file" \
-"Solution: base64 -d payload.dat"
+"The file doesn’t look like normal text—but it isn’t random either." \
+"Look closely at the character set and structure. Patterns matter more than meaning." \
+"This data isn’t meant to be read directly. It needs to be transformed before it makes sense."
 }
 
 # [FIX-6] L09 hints 2/3 were redundant — hint2 named cipher AND tool, hint3 was copy
@@ -423,9 +423,9 @@ LEOF
     meta "09" \
 "The file 'signal.dat' contains an encoded message.\nDetermine the cipher and reverse it to get the password." \
 "DECODE_BRAVO\n\nReadable characters. Meaningless text. A cipher.\nThe classic substitution. Letters shifted. The same distance as always.\nIdentify the pattern — A becomes N, B becomes O, Z becomes M.\nWhat cipher does this?" \
-"Inspect the file: cat signal.dat    Count how many positions A has shifted to find the cipher name." \
-"The cipher is ROT13. The bash tool that translates character sets is 'tr'. Build the mapping yourself." \
-"Syntax: tr 'SOURCE_CHARS' 'DEST_CHARS' < file    — map each letter 13 positions forward"
+"The contents aren’t random—but they aren’t readable either." \
+"The transformation is consistent across the entire file. What changes is predictable." \
+"You’re not looking for the data—you’re looking for how the data was shifted."
 }
 
 build_l10() {
@@ -447,9 +447,9 @@ LEOF
     meta "10" \
 "Extract the plaintext credential embedded in binary file 'firmware.bin'.\nThe surrounding file is binary — you cannot safely read it directly." \
 "PHANTOM_SIGNAL\n\nA firmware image. Mostly noise.\nSomewhere inside: human-readable text.\nBinary files contain printable strings — there are tools that surface them." \
-"What command extracts human-readable strings from binary/compiled files?" \
-"'strings firmware.bin' outputs all printable sequences. Also: grep -a PATTERN binaryfile" \
-"Solution: strings firmware.bin    identify the credential    OR grep -a '===' firmware.bin"
+"The file isn’t meant to be read as plain text—but not all of it is meaningless." \
+"Buried within the noise are fragments that *are* readable. You need a way to isolate them." \
+"Don’t try to interpret the whole file—extract only what the system would consider printable."
 }
 
 build_l11() {
@@ -471,9 +471,9 @@ build_l11() {
     meta "11" \
 "A file named 'target' exists somewhere in the directory tree.\nDecoy files with similar names exist. Find the real one and read it." \
 "THE_MAZE\n\nDozens of directories. Hundreds of files.\nSome named to confuse — target.old, target.bak, the wrong 'target'.\nOnly one file named exactly 'target' (no extension) holds the real key.\nManual navigation is futile. Use a recursive search." \
-"How do you search an entire directory tree for a file by exact name?" \
-"find . -name 'target' -type f    — matches only exact name 'target', no extensions" \
-"Solution: find . -name 'target' -type f    then cat the path it returns"
+"The file you need isn’t in your immediate view." \
+"It exists somewhere within this directory structure—you need to search for it." \
+"Use a method that recursively explores directories and locates files by name."
 }
 
 # [FIX-5] L12 hint3 previously revealed exact layer sequence ("Three layers: gunzip → bunzip2 → gunzip")
@@ -497,9 +497,9 @@ LEOF
     meta "12" \
 "Decompress archive.gz until you reach plaintext.\nThe archive has multiple layers — use 'file' after each step to identify the next format." \
 "DEEP_ARCHIVE\n\nA compressed archive. But how many layers?\nYou don't know until you start peeling.\nEach layer could be anything — the file command is your only guide.\nPeel. Identify. Rename. Repeat." \
-"First: cp archive.gz /tmp/w.gz && cd /tmp    Then: use 'file' after EVERY decompression step." \
-"Before decompressing, rename with the correct extension: gunzip needs .gz, bunzip2 needs .bz2." \
-"Let 'file' reveal each layer type — do not assume the sequence. Rename, decompress, identify, repeat."
+"What you’re looking at isn’t a single layer." \
+"Each step reveals something new—but only if you understand what you’re dealing with." \
+"Do not assume the format. Identify, act accordingly, and repeat until nothing remains hidden."
 }
 
 build_l13() {
@@ -530,9 +530,9 @@ LEOF
     meta "13" \
 "One of the nine proc files has the SUID bit set (runs with elevated privileges).\nFind it using file permission filtering, then read it." \
 "SETUID_HUNT\n\nNine files. One elevated.\nVisual inspection of ls output will show you — if you know what to look for.\nOr enumerate programmatically. The SUID bit (4000) is your target.\nThis is how every privilege escalation audit begins." \
-"The SUID permission bit (4000) appears as 's' in the owner execute position of ls -l output." \
-"find can filter by permission: find . -perm -4000 -type f" \
-"Solution: find . -perm -4000 -type f    then cat the result"
+"Something here operates with more privilege than it should." \
+"Permissions can reveal behavior—look closely for anything that doesn’t match the usual pattern." \
+"Search the directory tree for files with unusual execution characteristics, then inspect what you find."
 }
 
 build_l14() {
@@ -555,9 +555,9 @@ LEOF
     meta "14" \
 "Connect to localhost port 4444 and capture the transmitted credential." \
 "SIGNAL_DROP\n\nA signal is broadcasting. Right here. This machine.\nPort 4444. No internet required.\nYou just need to know how to open a wire and listen." \
-"What tool connects to a TCP port on a host and reads its output?" \
-"netcat syntax: nc <host> <port>    bash fallback: cat < /dev/tcp/localhost/4444" \
-"Solution: nc localhost 4444    then extract the value from the packet    OR: cat </dev/tcp/localhost/4444"
+"Something on this system is actively listening—you won’t find the answer in files." \
+"The information is being served, not stored. You need to connect to receive it." \
+"Identify where the service is listening, then interact with it to capture the data."
 }
 
 # [FIX-7] L15 hint3 previously named exact target path and filename
@@ -586,9 +586,9 @@ LEOF
     meta "15" \
 "Credentials are stored in a hidden directory. Enumerate all hidden files and directories.\nOnly one file contains a valid 20-character access code." \
 "DEAD_DROP\n\nHidden directories. Multiple credential files.\nSome expired. Some fake. One live.\nYou cannot read their names — you have to look for them.\nEnumerate everything. Hidden included." \
-"How do you list hidden directories?    What flag shows dot-files in ls?" \
-"ls -la reveals dot-files. Explore each hidden directory with ls -la <dir>/    Read every file." \
-"The valid credential is exactly 20 alphanumeric characters. Read each file and check its length."
+"What you’re looking for isn’t immediately visible—and it’s not in just one place." \
+"Explore beyond the obvious. Some paths require a different way of listing to even appear." \
+"Multiple candidates may look valid. Only one follows a consistent pattern—identify it carefully."
 }
 
 build_l16() {
@@ -637,9 +637,9 @@ CEOF
     meta "16" \
 "A live credential is hardcoded in one of the scripts in cron.d/.\nAll four scripts contain credential-looking values — find the active one." \
 "CRONTAB\n\nFour scheduled jobs. Three have credentials.\nOnly one token is live and current.\nDevelopers often hardcode — then forget.\nSearch the code. Not every match is valid." \
-"How do you search all files in a directory for patterns like tokens, passwords, or keys?" \
-"grep -r searches recursively: grep -rn 'TOKEN\|PASS\|SECRET\|KEY' cron.d/" \
-"Solution: grep -r 'NX_CONN_TOKEN' cron.d/    the value assigned to NX_CONN_TOKEN is the credential"
+"The information you need is embedded within configuration data." \
+"Look for patterns that resemble credentials—names, assignments, or structured values." \
+"Search across the directory and isolate the line that actually defines the value—not just mentions it."
 }
 
 build_l17() {
@@ -665,9 +665,9 @@ LEOF
     meta "17" \
 "A credential has leaked into the shell environment variables.\nEnumerate ALL NEXUS_* variables — identify which value is the actual access token." \
 "ENV_LEAK\n\nThe process left its secrets in the open air.\nMultiple configuration values. One is a credential.\nThey all look plausible. Only one is the token.\nList the environment. Read each value. Decide which is real." \
-"What commands list all environment variables?" \
-"env lists everything. env | grep NEXUS filters by prefix. Tokens look different from config values." \
-"Solution: env | grep NEXUS    identify the 20-char random string vs config values    printenv NEXUS_SESSION_TOKEN"
+"The system is already holding the information—you just haven’t looked in the right place." \
+"Not all data comes from files. Some values exist only within the current environment." \
+"Identify what stands out from the rest—one value is clearly not configuration, but a generated secret."
 }
 
 build_l18() {
@@ -692,9 +692,9 @@ LEOF
     meta "18" \
 "Six files with potentially misleading extensions.\nOne contains a readable credential — identify it without trusting filenames or extensions." \
 "WEB_OF_LIES\n\nExtensions were tampered with. Names lie.\nA .txt is not text. A .exe is not executable. A .sh is not a script.\nOnly the actual content tells the truth.\nWhich tool bypasses names and reads raw file signatures?" \
-"File extensions mean nothing in Linux — the OS uses magic bytes, not names." \
-"'file *' inspects all files at once and reports their true type from internal signatures." \
-"Solution: file *    identify the one reporting 'ASCII text'    cat it"
+"Names can be misleading—the answer isn’t where it appears to be." \
+"Several files may look similar, but only one actually contains meaningful data." \
+"Don’t trust how things are labeled. Identify what each file truly is, then inspect the right one."
 }
 
 build_l19() {
@@ -720,9 +720,9 @@ LEOF
     meta "19" \
 "A credential is embedded in binary 'memdump.bin'.\nIt is encoded — extract the encoded form, then decode it to get the password." \
 "HEX_GHOST\n\nMemory doesn't lie. But it speaks in code.\nA credential is in there — but not in plaintext.\nTwo steps: extract the encoded artifact, then reverse the encoding.\nBinary tools surface it. A decoder finalizes it." \
-"'strings memdump.bin' extracts printable text. Look for something that looks encoded." \
-"What does a base64-encoded 20-char string look like?  Length ~28 chars, A-Za-z0-9+/= chars" \
-"Solution: strings memdump.bin | grep -E '^[A-Za-z0-9+/]{20,}={0,2}$'    then base64 -d"
+"The data looks chaotic, but fragments of meaning are buried within it." \
+"Among the readable pieces, one stands out—it doesn’t look like plain text." \
+"Extract what you can, then identify which fragment needs to be transformed before it makes sense."
 }
 
 build_l20() {
@@ -752,9 +752,9 @@ LEOF
     meta "20" \
 "Extract the admin's encoded TOKEN from personnel.db and decode it.\nBuild a command pipeline to: find the admin line, extract the TOKEN field, decode it." \
 "PIPELINE\n\nForty-one records. One admin. One encoded token.\nRaw data means nothing until you shape it.\nEach pipe stage refines — filter, extract, decode.\nBuild the chain." \
-"You need three stages: grep to find admin, extract the TOKEN field, decode the value." \
-"grep finds the line. grep -o 'TOKEN:[^|]*' or cut -d'|' extracts the field. base64 -d decodes." \
-"Solution: grep 'ROLE:admin' personnel.db | grep -o 'TOKEN:[^|]*' | cut -d: -f2 | base64 -d"
+"The answer isn’t in a single step—it’s hidden behind a sequence of transformations." \
+"You’ll need to locate the right record, isolate the relevant portion, and process it further." \
+"Think in stages: find → extract → transform. Build the chain carefully."
 }
 
 # =============================================================================
