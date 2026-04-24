@@ -232,9 +232,9 @@ build_l01() {
     meta "01" \
 "Read the file named README in your working directory." \
 "BOOT_SECTOR\n\nYour terminal flickers to life.\nThe Architect left a message. File: README.\nOne command. One answer." \
-"What command reads a file and prints it to the screen?" \
-"Syntax: cat <filename>" \
-"Final Hint: The file is already in your directory. Focus on displaying its contents, not modifying it."
+"There’s something in your current directory that already contains what you need." \
+"You don’t need to create, edit, or move anything. Just interact with what’s already there." \
+"If you can’t see the answer, it’s because you haven’t displayed it yet."
 }
 
 build_l02() {
