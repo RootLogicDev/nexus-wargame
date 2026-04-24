@@ -250,6 +250,7 @@ build_l02() {
 "The problem isn’t the command—it’s how the input is being interpreted." \
 "You need to force the shell to treat it explicitly as a file in the current directory."
 }
+
 build_l03() {
     mkl "03" "$1"
     local d="$LEVELS_DIR/level03/challenge"
@@ -260,11 +261,8 @@ build_l03() {
     echo "decoy_gamma"  > "$d/ACCESS_CODE"
     echo "decoy_delta"  > "$d/access.code"
 
-    # [UPGRADE] prevent ls from auto-quoting filenames (keeps challenge intact)
-    _nexus_ls() {
-        command ls --quoting-style=literal "$@" 2>/dev/null || command ls "$@"
-    }
-    alias ls='_nexus_ls'
+    # [UPGRADE] enforce consistent ls output (no auto-quoting leaks, cross-platform safe)
+    alias ls='command ls -1'
 
     cat > "$d/MANIFEST" << 'LEOF'
 FILE MANIFEST
@@ -274,9 +272,10 @@ One contains the credential.
 Its name contains a whitespace character.
 Standard argument passing will fail.
 LEOF
+
     meta "03" \
-"One file in this directory has a space in its name and contains the password.\nStandard argument syntax will fail. You must handle it correctly." \
-"WHITESPACE\n\nFive files. Four are noise.\nThe one you want has a space in its name — invisible to casual eyes.\nThe shell will misinterpret it unless you force it otherwise.\nQuote or escape. Control the parser." \
+"One file in this directory behaves differently when you try to access it." \
+"WHITESPACE\n\nFive files. Four are noise.\nOne will break normal command behavior.\nThe shell is not interpreting your input the way you expect.\nControl how it reads your command." \
 "The issue isn’t the file—it’s how the command is interpreting what you typed." \
 "The shell separates arguments on spaces. This filename isn’t being treated as a single piece." \
 "You need a way to make the shell treat the entire name as one argument."
