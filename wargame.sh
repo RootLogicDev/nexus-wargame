@@ -234,7 +234,7 @@ build_l01() {
 "BOOT_SECTOR\n\nYour terminal flickers to life.\nThe Architect left a message. File: README.\nOne command. One answer." \
 "What command reads a file and prints it to the screen?" \
 "Syntax: cat <filename>" \
-"Solution: cat README"
+"Final Hint: The file is already in your directory. Focus on displaying its contents, not modifying it."
 }
 
 build_l02() {
