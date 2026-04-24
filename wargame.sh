@@ -251,33 +251,34 @@ build_l02() {
 "You need to force the shell to treat it explicitly as a file in the current directory."
 }
 
-
 build_l03() {
     mkl "03" "$1"
     local d="$LEVELS_DIR/level03/challenge"
 
-    echo "$1"           > "$d/.access code"
-    echo "decoy_alpha"  > "$d/accesscode"
-    echo "decoy_beta"   > "$d/access_code"
-    echo "decoy_gamma"  > "$d/ACCESS_CODE"
-    echo "decoy_delta"  > "$d/access.code"
+    # [UPGRADE] case sensitivity challenge
+    echo "$1"           > "$d/ACCESS_CODE"
+
+    echo "decoy_alpha"  > "$d/ACCESS_ĆODE"
+    echo "decoy_beta"   > "$d/ACCESS_CÔDE"
+    echo "decoy_gamma"  > "$d/ÀCCESS_CODE"
+    echo "decoy_delta"  > "$d/AČCESS_CODE"
 
     cat > "$d/MANIFEST" << 'LEOF'
 FILE MANIFEST
 =============
 Five data files present.
 One contains the credential.
-It is not immediately visible.
-Standard listing will not reveal it.
+Names may appear similar—but they are not identical.
 LEOF
 
     meta "03" \
 "One file in this directory behaves differently when you try to access it." \
-"Some files are not visible using default listing methods." \
-"The issue isn’t the file—it’s how the command is interpreting what you typed." \
-"The shell separates arguments on spaces. This filename isn’t being treated as a single piece." \
-"You need a way to make the shell treat the entire name as one argument."
+"CASE\n\nSeveral filenames look almost identical.\nBut the system does not treat them as the same.\nWhat you type must match exactly." \
+"The issue isn’t the command—it’s the name you’re using." \
+"The system distinguishes between uppercase and lowercase characters." \
+"You must match the filename exactly as it exists."
 }
+
 
 build_l04() {
     mkl "04" "$1"
