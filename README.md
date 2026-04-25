@@ -1,10 +1,10 @@
-# 🔴 NEXUS WARGAME v1.1.1 — Operation: Zero Day
+# 🔴 NEXUS WARGAME v1.1.2 — Operation: Zero Day
 
 > A hardened terminal-based cybersecurity wargame designed to simulate real-world attack workflows.
 
 ---
 
-## 🚀 Latest Update — v1.1.1 (Integrity & Stability Upgrade)
+## 🚀 Latest Update — v1.1.2 (Integrity & Stability Upgrade)
 
 This update strengthens the internal reliability and security of the system.
 
