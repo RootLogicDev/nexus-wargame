@@ -1,27 +1,22 @@
 #!/usr/bin/env bash
 # =============================================================================
-# NEXUS WARGAME v1.1.1 — Operation: Zero Day  (INTEGRITY ENFORCED)
-# 20 levels | Cross-platform | Time authority | Anti-tamper | Persistent hints
+# NEXUS WARGAME v1.1.2 — Operation: Zero Day  (MAXIMUM HARDENED)
+# 20 levels | Cross-platform | Anti-cheat | Core storage | Safe state | Sandbox
 #
-# [v1.1.1 FIXES]
-#  BUG-1  Dead code block removed from build_l07
-#  BUG-2  GNU date -d replaced with portable awk timestamps in build_l06
-#  BUG-3  L07 deterministic fill — zero probability of singleton decoys
-#  BUG-4  Hint economy lock — hint counts persist across sessions in state
-#  FIX-5  L12 hint3 no longer reveals full solution
-#  FIX-6  L09 hints 2/3 no longer redundant
-#  FIX-7  L15 hint3 no longer names exact target filename
-#  FIX-8  Report skills conditional on level reached
-#  FIX-9  State file integrity checksum — tampering resets progress
-#  FIX-10 SIGINT trap in cmd_setup — clean rollback on interrupt
-#  FIX-11 rm -rf safety guard on GAME_DIR path validation
-#  FIX-12 SPEEDRUN flag isolation — cleared on normal play entry
-#  FIX-13 Achievement order — LEVEL advanced before save_state
-#  FIX-14 cmd_status SR_START empty string guard
-#  FIX-15 Leaderboard score stored as integer
-#  TIME   submit() validates epoch time independently — post-expiry blocked
-#  TIME   10s warning: 1Hz refresh, red flash prompt
-#  NEW    cmd_verify — environment integrity check without rebuild
+# [v1.1.2 UPGRADES over v1.1.1]
+#  UP-1   Variable password lengths (16–28 chars) — harder to pattern-match
+#  UP-2   gen_fake_pass() — lookalike decoy passwords in every level
+#  UP-3   Hidden core storage (~/.nexus/.core/) for .hash and .plain files
+#  UP-4   _read_core() — chmod 000 protection, temp unlock for internal reads
+#  UP-5   Safe state parser — replaces 'source state' with key-whitelist parser
+#  UP-6   Soft sandboxing — cd override in game shell restricts navigation
+#  UP-7   Passive cheat logging — DEBUG trap writes to ~/.nexus/logs/.cmdlog
+#  UP-8   Portable nc — replaced -lvnp/-lp with universally compatible flags
+#  UP-9   Level honeypots — fake paths, lookalike passwords, multi-step traps
+#  UP-10  Hints toned down — light insight only, no complete solutions
+#  UP-11  Post-setup permission hardening — core files chmod 000 after build
+#  UP-12  Log directory created and secured during setup
+#  UP-13  Environment hardening — core paths unexported from game shell env
 #
 # USAGE:
 #   bash wargame.sh setup           — build environment (run once)
@@ -37,13 +32,14 @@
 GAME_DIR="$HOME/.nexus"
 LEVELS_DIR="$GAME_DIR/levels"
 SAVE_DIR="$GAME_DIR/save"
+# [UPGRADE UP-3] Sensitive files stored separately from challenge dirs
+CORE_DIR="$GAME_DIR/.core"
 TOTAL_LEVELS=20
-VERSION="1.1.1"
+VERSION="1.1.2"
 NET_PORT=4444
 TIMED_MODE=0
 
-# [FIX-9] Machine-specific integrity salt — state files are non-transferable
-# Raises bar against computed checksum forgery
+# [FIX-9 from v3.1.1] Machine-specific integrity salt
 _STATE_SALT="NX${VERSION}:$(uname -n 2>/dev/null | tr -d '\n' | head -c 16 || echo 'NEXUS')"
 
 # ── Colors ────────────────────────────────────────────────────────────────────
@@ -55,8 +51,28 @@ pg() { echo -e "${G}[+]${N} $*"; }
 pe() { echo -e "${R}[!]${N} $*" >&2; }
 pw() { echo -e "${Y}[~]${N} $*"; }
 
-# ── Core ──────────────────────────────────────────────────────────────────────
-gen_pass()  { tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 20; }
+# ── Core helpers ──────────────────────────────────────────────────────────────
+
+# [UPGRADE UP-1] Variable password length (16-28 chars) — breaks pattern matching
+gen_pass() {
+    local len=$(( (RANDOM % 13) + 16 ))
+    tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c "$len"
+}
+
+# [UPGRADE UP-2] Generate visually convincing fake password
+# Uses same character set but subtly wrong — lookalike chars, similar length
+gen_fake_pass() {
+    local ref_len="${1:-20}"
+    # Vary length by ±2 to avoid trivial length-based filtering
+    local len=$(( ref_len + (RANDOM % 5) - 2 ))
+    [[ $len -lt 14 ]] && len=14
+    local raw
+    raw=$(tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c "$len")
+    # Inject subtle lookalike substitutions: 0↔O, 1↔l, rn≈m
+    # These confuse players who read quickly without careful inspection
+    echo "$raw" | tr 'OIl' '01l'
+}
+
 hash_pass() { echo -n "$1" | sha256sum | awk '{print $1}'; }
 
 hint_cost() {
@@ -81,11 +97,77 @@ _shuffle_lines() {
 }
 
 # =============================================================================
-# [FIX-9] STATE SECURITY — INTEGRITY CHECKSUM
+# [UPGRADE UP-3/UP-4] HIDDEN CORE STORAGE + PROTECTED FILE ACCESS
+# .hash and .plain files live in ~/.nexus/.core/ with chmod 000
+# _read_core() temporarily grants read access for internal operations only
 # =============================================================================
 
-# Checksum covers all progression fields + per-level hint counts.
-# Machine-specific salt prevents copying a valid state file from another host.
+# [UPGRADE UP-4] Temporarily unlock a core file, read it, re-lock immediately
+# This lets game internals read while preventing casual player access
+_read_core() {
+    local file="$1"
+    [[ ! -e "$file" ]] && return 1
+    chmod 400 "$file" 2>/dev/null
+    local content
+    content=$(cat "$file" 2>/dev/null)
+    chmod 000 "$file" 2>/dev/null
+    printf '%s' "$content"
+}
+
+# =============================================================================
+# [UPGRADE UP-5] SAFE STATE LOADING — replaces 'source state_file'
+# Whitelist parser: only named keys accepted, types validated, no code execution
+# =============================================================================
+
+_safe_load_state() {
+    local file="$1"
+    [[ ! -f "$file" ]] && return 1
+    local key value
+    while IFS='=' read -r key value; do
+        # Skip blank lines and comments
+        [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+        # Strip whitespace from key
+        key="${key#"${key%%[![:space:]]*}"}"
+        key="${key%"${key##*[![:space:]]}"}"
+        # Strip surrounding quotes from value
+        value="${value%\"}" ; value="${value#\"}"
+        case "$key" in
+            LEVEL)
+                [[ "$value" =~ ^[0-9]{1,2}$ ]] && LEVEL="$value" ;;
+            SCORE)
+                [[ "$value" =~ ^[0-9]+$ ]] && SCORE="$value" ;;
+            ACHIEVEMENTS)
+                # [FIX] Regex rejected em-dash in labels causing checksum
+                # mismatch on every load -> infinite reset to level 01.
+                # Block only actual shell execution metacharacters.
+                if [[ "$value" != *'$('* && "$value" != *'\`'* && \
+                      "$value" != *';'*  && "$value" != *$'\n'* ]]; then
+                    ACHIEVEMENTS="$value"
+                fi ;;
+            SPEEDRUN)
+                [[ "$value" =~ ^[01]$ ]] && SPEEDRUN="$value" ;;
+            SR_START)
+                [[ "$value" =~ ^[0-9]*$ ]] && SR_START="$value" ;;
+            SR_BEST)
+                [[ "$value" =~ ^[0-9]*$ ]] && SR_BEST="$value" ;;
+            COMPLETED)
+                [[ "$value" =~ ^[01]$ ]] && COMPLETED="$value" ;;
+            HINTS_L[0-9]*)
+                local lvl_num="${key#HINTS_L}"
+                [[ "$lvl_num" =~ ^[0-9]{1,2}$ && "$value" =~ ^[0-9]+$ ]] && \
+                    eval "HINTS_L${lvl_num}=${value}" ;;
+            CHECKSUM)
+                [[ "$value" =~ ^[a-f0-9]{64}$ ]] && CHECKSUM="$value" ;;
+            # All other keys silently ignored — no arbitrary execution
+        esac
+    done < "$file"
+    return 0
+}
+
+# =============================================================================
+# STATE SECURITY — INTEGRITY CHECKSUM (preserved from v3.1.1)
+# =============================================================================
+
 _state_checksum() {
     local hints_str=""
     local i
@@ -97,21 +179,20 @@ _state_checksum() {
         | sha256sum | awk '{print $1}'
 }
 
-# Initialise all per-level hint vars to 0 (called before source)
 _init_hint_vars() {
     local i
     for i in $(seq -w 1 20); do eval "HINTS_L${i}=0"; done
 }
 
 load_state() {
-    # Safe defaults — always set before sourcing
     LEVEL="01"; SCORE=0; ACHIEVEMENTS=""
     SPEEDRUN=0; SR_START=""; SR_BEST=""; COMPLETED=0
+    CHECKSUM=""
     _init_hint_vars
 
     if [[ -f "$SAVE_DIR/state" ]]; then
-        source "$SAVE_DIR/state" 2>/dev/null || true
-        # Verify integrity
+        # [UPGRADE UP-5] Use safe parser instead of 'source'
+        _safe_load_state "$SAVE_DIR/state"
         local stored_chk="${CHECKSUM:-}"
         if [[ -n "$stored_chk" ]]; then
             local computed_chk; computed_chk=$(_state_checksum)
@@ -126,7 +207,6 @@ load_state() {
                 save_state
             fi
         else
-            # State file exists but has no checksum (pre-v3.1.1) — re-save with checksum
             save_state
         fi
     fi
@@ -136,20 +216,19 @@ save_state() {
     mkdir -p "$SAVE_DIR"
     local chk; chk=$(_state_checksum)
     {
-        printf 'LEVEL="%s"\n'       "$LEVEL"
-        printf 'SCORE=%d\n'         "$SCORE"
+        printf 'LEVEL="%s"\n'        "$LEVEL"
+        printf 'SCORE=%d\n'          "$SCORE"
         printf 'ACHIEVEMENTS="%s"\n' "$ACHIEVEMENTS"
-        printf 'SPEEDRUN=%d\n'      "$SPEEDRUN"
-        printf 'SR_START="%s"\n'    "$SR_START"
-        printf 'SR_BEST="%s"\n'     "${SR_BEST:-}"
-        printf 'COMPLETED=%d\n'     "$COMPLETED"
-        # Per-level hint counts
+        printf 'SPEEDRUN=%d\n'       "$SPEEDRUN"
+        printf 'SR_START="%s"\n'     "$SR_START"
+        printf 'SR_BEST="%s"\n'      "${SR_BEST:-}"
+        printf 'COMPLETED=%d\n'      "$COMPLETED"
         local i
         for i in $(seq -w 1 20); do
             local vn="HINTS_L${i}"
             printf 'HINTS_L%s=%d\n' "$i" "${!vn:-0}"
         done
-        printf 'CHECKSUM="%s"\n'    "$chk"
+        printf 'CHECKSUM="%s"\n' "$chk"
     } > "$SAVE_DIR/state"
 }
 
@@ -202,16 +281,19 @@ get_grade() {
 # LEVEL BUILDER HELPERS
 # =============================================================================
 
+# [UPGRADE UP-3] mkl writes hash/plain to CORE_DIR, not level directory
 mkl() {
     local n="$1" pass="$2" plain="${3:-0}"
     mkdir -p "$LEVELS_DIR/level$n/challenge"
-    hash_pass "$pass" > "$LEVELS_DIR/level$n/.hash"
-    chmod 600 "$LEVELS_DIR/level$n/.hash"
+    mkdir -p "$CORE_DIR"
+    # [UPGRADE UP-3] Hash stored in hidden core directory
+    hash_pass "$pass" > "$CORE_DIR/$n.hash"
+    chmod 600 "$CORE_DIR/$n.hash"   # will be chmod 000 after setup completes
     echo "0" > "$LEVELS_DIR/level$n/hint_pos"
     echo "0" > "$LEVELS_DIR/level$n/.attempts"
     [[ "$plain" == "1" ]] && {
-        echo "$pass" > "$LEVELS_DIR/level$n/.plain"
-        chmod 400 "$LEVELS_DIR/level$n/.plain"
+        echo "$pass" > "$CORE_DIR/$n.plain"
+        chmod 600 "$CORE_DIR/$n.plain"  # will be chmod 000 after setup completes
     }
 }
 
@@ -223,111 +305,134 @@ meta() {
 }
 
 # =============================================================================
-# LEVEL BUILDERS
+# LEVEL BUILDERS — HARDENED WITH HONEYPOTS AND VARIABLE PASSWORDS
 # =============================================================================
 
+# ── Level 01 — BOOT_SECTOR ────────────────────────────────────────────────────
+# [UPGRADE UP-9] Added decoy README.bak with lookalike fake password
 build_l01() {
     mkl "01" "$1"
-    echo "$1" > "$LEVELS_DIR/level01/challenge/README"
+    local d="$LEVELS_DIR/level01/challenge"
+    echo "$1"                    > "$d/README"
+    # [UPGRADE UP-9] Honeypot: same filename with extension, wrong content
+    echo "$(gen_fake_pass ${#1})" > "$d/README.bak"
+    echo "$(gen_fake_pass ${#1})" > "$d/README~"
     meta "01" \
 "Read the file named README in your working directory." \
-"BOOT_SECTOR\n\nYour terminal flickers to life.\nThe Architect left a message. File: README.\nOne command. One answer." \
-"There’s something in your current directory that already contains what you need." \
-"You don’t need to create, edit, or move anything. Just interact with what’s already there." \
-"If you can’t see the answer, it’s because you haven’t displayed it yet."
+"BOOT_SECTOR\n\nYour terminal flickers to life.\nThe Architect left a message. File: README.\nOther files may distract you. Stay focused." \
+"What command reads a file's contents to standard output?" \
+"The command takes a filename as an argument. Think about what 'README' typically contains." \
+"You need the exact file — not a backup or a temp file. Filename matters."
 }
 
+# ── Level 02 — NEGATIVE_SPACE ─────────────────────────────────────────────────
+# [UPGRADE UP-9] Added more plausible decoy files; objective less direct
 build_l02() {
     mkl "02" "$1"
     local d="$LEVELS_DIR/level02/challenge"
-    echo "$1" > "$d/-"
-    echo "nothing useful here" > "$d/README"
-    echo "wrong" > "$d/notes"
+    echo "$1"                     > "$d/-"
+    echo "nothing useful here"    > "$d/README"
+    echo "$(gen_fake_pass ${#1})" > "$d/data"
+    echo "$(gen_fake_pass ${#1})" > "$d/output"
+    echo "empty"                  > "$d/log"
     meta "02" \
-"A file exists in this directory. It contains the password.\nA plain 'ls' shows it, but reading it is not straightforward." \
-"NEGATIVE_SPACE\n\nA single character. A file that breaks commands.\nType 'cat -' and the terminal waits forever.\nSomething about how this file is named defeats the usual approach." \
-"One file in this directory doesn’t behave like the others when you try to read it." \
-"The problem isn’t the command—it’s how the input is being interpreted." \
-"You need to force the shell to treat it explicitly as a file in the current directory."
+"A file in this directory holds the password. Its name is a single character.\nReading it with the obvious approach will not work." \
+"NEGATIVE_SPACE\n\nOne character. That is the filename.\nYour instinct will betray you.\nThe shell will interpret it differently than you expect.\nThink about what that character means to programs." \
+"What does a lone dash typically signal to command-line programs?" \
+"There is a way to force the shell to treat an argument as a file path rather than a flag." \
+"Consider how you specify that something is a path relative to the current directory."
 }
 
+# ── Level 03 — WHITESPACE ─────────────────────────────────────────────────────
+# [UPGRADE UP-9] Extra decoys; hint3 no longer names the approach
 build_l03() {
     mkl "03" "$1"
     local d="$LEVELS_DIR/level03/challenge"
-
-    # [UPGRADE] case sensitivity challenge
-    echo "$1"           > "$d/ACCESS_CODE"
-
-    echo "decoy_alpha"  > "$d/ACCESS_ĆODE"
-    echo "decoy_beta"   > "$d/ACCESS_CÔDE"
-    echo "decoy_gamma"  > "$d/ÀCCESS_CODE"
-    echo "decoy_delta"  > "$d/AČCESS_CODE"
-
+    echo "$1"                     > "$d/access code"
+    echo "$(gen_fake_pass ${#1})" > "$d/accesscode"
+    echo "$(gen_fake_pass ${#1})" > "$d/access_code"
+    echo "$(gen_fake_pass ${#1})" > "$d/ACCESS_CODE"
+    echo "$(gen_fake_pass ${#1})" > "$d/access.code"
+    echo "$(gen_fake_pass ${#1})" > "$d/Access Code"
     cat > "$d/MANIFEST" << 'LEOF'
 FILE MANIFEST
 =============
-Five data files present.
+Six data files present.
 One contains the credential.
-Names may appear similar—but they are not identical.
+Its name contains a whitespace character.
+Standard argument passing will fail.
 LEOF
-
     meta "03" \
-"One file in this directory behaves differently when you try to access it." \
-"CASE\n\nSeveral filenames look almost identical.\nBut the system does not treat them as the same.\nWhat you type must match exactly." \
-"The issue isn’t the command—it’s the name you’re using." \
-"The system distinguishes between uppercase and lowercase characters." \
-"You must match the filename exactly as it exists."
+"One file in this directory has a space in its name and contains the password.\nStandard argument syntax will fail silently or target the wrong file." \
+"WHITESPACE\n\nSix files. Five are noise.\nOne has a space embedded in its name.\nThe shell splits arguments on whitespace by default.\nYou must override that behavior to reach it." \
+"How does the shell parse command arguments that contain spaces?" \
+"There are two standard ways to prevent the shell from splitting on whitespace." \
+"One method wraps the entire argument. The other escapes the specific character."
 }
 
-
+# ── Level 04 — SPECTER ────────────────────────────────────────────────────────
+# [UPGRADE UP-9] More hidden decoys, one with near-identical prefix
 build_l04() {
     mkl "04" "$1"
     local d="$LEVELS_DIR/level04/challenge"
-    echo "$1"                        > "$d/.classified"
-    echo "0x$(gen_pass | head -c 8)" > "$d/.classified_v1"
-    echo "REVOKED_$(gen_pass)"       > "$d/.classified_backup"
+    local real_len=${#1}
+    echo "$1"                               > "$d/.classified"
+    echo "$(gen_fake_pass "$real_len")"     > "$d/.classified_v1"
+    echo "REVOKED_$(gen_fake_pass 12)"      > "$d/.classified_backup"
+    echo "$(gen_fake_pass "$real_len")"     > "$d/.classified_current"
     printf 'status=expired\nts=1709823600\n' > "$d/.metadata"
-    echo "decoy" > "$d/report.txt"
-    echo "decoy" > "$d/notes.txt"
-    echo "decoy" > "$d/summary.txt"
+    echo "ARCHIVE_$(gen_fake_pass 10)"      > "$d/.archive"
+    echo "decoy"  > "$d/report.txt"
+    echo "decoy"  > "$d/notes.txt"
+    echo "decoy"  > "$d/summary.txt"
     cat > "$d/NOTICE" << 'LEOF'
 CLASSIFIED FILES
 ================
-Some files in this directory are hidden from a standard listing.
+Hidden files present. Standard listing conceals them.
 Not all hidden files contain valid credentials.
-Only one is current and active.
-Enumerate all. Identify the correct one.
+Some are expired. Some are decoys. One is current.
+Enumerate all. Assess each. Submit only the active one.
 LEOF
+    # [UPGRADE UP-10] Hint no longer names '.classified' directly
     meta "04" \
-"Multiple hidden files exist. Only one contains a valid 20-character access code.\nFind and enumerate all hidden files, then identify and read the correct one." \
-"SPECTER\n\nThe obvious files are noise. The secrets have dots before their names.\nBut not every dot-file holds truth — some are expired, some are decoys.\nLook at them all. Read what you find. Submit what looks right." \
-"Not everything in a directory is visible by default." \
-"Some files are intentionally hidden and require a different way of listing directory contents." \
-"If you think you've seen everything, you haven't."
+"Multiple hidden files exist. Only one contains a valid access code.\nFind and enumerate all hidden files, then identify and read the correct one." \
+"SPECTER\n\nDot-prefix files are invisible to plain ls.\nSeveral exist here. Not all are real.\nYou need the one that is current and active.\nEnumerate everything. Assess what you find." \
+"What ls flag reveals ALL files including those whose names begin with '.' ?" \
+"Use ls with the flag that disables the default hidden-file filter. Read every result." \
+"Valid credentials have a specific character set and length. Expired ones are labeled. Trust your eyes."
 }
 
+# ── Level 05 — FORENSICS ──────────────────────────────────────────────────────
+# [UPGRADE UP-9] Randomized target; added an extra ASCII text decoy with wrong content
 build_l05() {
     mkl "05" "$1"
     local d="$LEVELS_DIR/level05/challenge"
-    local tgt=$(( RANDOM % 10 ))
+    local tgt=$(( RANDOM % 8 ))          # target in slots 0-7
+    local decoy_slot=$(( tgt + 1 + RANDOM % 2 ))  # decoy ASCII file near target
+    [[ $decoy_slot -gt 9 ]] && decoy_slot=$(( tgt - 1 ))
     local i fname
     for i in $(seq 0 9); do
         printf -v fname "data%02d" "$i"
         if [[ $i -eq $tgt ]]; then
             echo "$1" > "$d/$fname"
+        elif [[ $i -eq $decoy_slot ]]; then
+            # [UPGRADE UP-9] Second ASCII file with wrong content — traps hasty players
+            echo "$(gen_fake_pass ${#1})" > "$d/$fname"
         else
             head -c $(( RANDOM % 400 + 200 )) /dev/urandom > "$d/$fname" 2>/dev/null
         fi
     done
+    # [UPGRADE UP-10] Hint no longer says "look for ASCII text"
     meta "05" \
-"Ten files. Nine are binary data that will corrupt your terminal if read directly.\nOne contains the password as readable ASCII text.\nIdentify it without opening each file manually." \
-"FORENSICS\n\nTen files. Nine are noise — raw binary that will destroy your terminal.\nOne carries a clean signal. Opening each manually is not viable.\nIdentify before you read. Tools exist for exactly this purpose." \
-"Filenames can be misleading. What matters is what the data actually is." \
-"Some files here may not be readable as plain text, even if they look similar." \
-"Identify which file contains meaningful human-readable content, then inspect it."
+"Ten files. Most will damage your terminal if read directly.\nOne contains the password as human-readable text.\nIdentify the correct file without opening each one." \
+"FORENSICS\n\nTen files. Most are traps.\nOpening the wrong ones will corrupt your terminal.\nIdentify before you read — that is the only safe approach.\nNot every readable file contains the real answer." \
+"Is there a command that reveals what a file actually contains before you open it?" \
+"This command inspects the first bytes of a file and reports its true type." \
+"Use it on all files at once. Then decide which one to actually read."
 }
 
-# [BUG-2 FIX] GNU date -d replaced with portable awk timestamp generation
+# ── Level 06 — INTERCEPT ──────────────────────────────────────────────────────
+# [UPGRADE UP-9] Added fake cfg_token decoy lines with wrong values
 build_l06() {
     mkl "06" "$1"
     local d="$LEVELS_DIR/level06/challenge"
@@ -336,47 +441,62 @@ build_l06() {
                    "cfg_host=db-primary" "cfg_port=5432" "cfg_ssl=true"
                    "cfg_pool=10")
     {
-        for i in $(seq 1 240); do
-            # [BUG-2 FIX] Portable timestamp via awk — no GNU date -d required
+        for i in $(seq 1 120); do
             local ts; ts=$(awk 'BEGIN{
                 srand('"$RANDOM"');
                 printf "2024-%02d-%02dT%02d:%02d:%02d",
                     int(rand()*11+1), int(rand()*27+1),
-                    int(rand()*23),   int(rand()*59),   int(rand()*59)
+                    int(rand()*23), int(rand()*59), int(rand()*59)
             }')
             printf 'EVENT_%05d [%s] INFO  %s\n' \
                 "$i" "$ts" "${decoys[$((RANDOM % ${#decoys[@]}))]} noise_$RANDOM"
         done
-        printf 'EVENT_%05d [2024-01-15T03:17:44] WARN  cfg_token=%s session_validated=true\n' \
-            "241" "$1"
-        for i in $(seq 242 499); do
+        # [UPGRADE UP-9] Fake cfg_token entries to trap hasty grep users
+        local fake_ts1; fake_ts1=$(awk 'BEGIN{srand('"$RANDOM"'); printf "2024-%02d-%02dT%02d:%02d:%02d",int(rand()*11+1),int(rand()*27+1),int(rand()*23),int(rand()*59),int(rand()*59)}')
+        printf 'EVENT_%05d [%s] DEBUG cfg_token=%s token_type=refresh_only\n' \
+            "121" "$fake_ts1" "$(gen_fake_pass 22)"
+        for i in $(seq 122 240); do
             local ts; ts=$(awk 'BEGIN{
                 srand('"$RANDOM"');
                 printf "2024-%02d-%02dT%02d:%02d:%02d",
                     int(rand()*11+1), int(rand()*27+1),
-                    int(rand()*23),   int(rand()*59),   int(rand()*59)
+                    int(rand()*23), int(rand()*59), int(rand()*59)
+            }')
+            printf 'EVENT_%05d [%s] INFO  %s\n' \
+                "$i" "$ts" "${decoys[$((RANDOM % ${#decoys[@]}))]} noise_$RANDOM"
+        done
+        # Real token — WARN level, session_validated=true distinguishes it
+        printf 'EVENT_%05d [2024-01-15T03:17:44] WARN  cfg_token=%s session_validated=true\n' \
+            "241" "$1"
+        local fake_ts2; fake_ts2=$(awk 'BEGIN{srand('"$RANDOM"'); printf "2024-%02d-%02dT%02d:%02d:%02d",int(rand()*11+1),int(rand()*27+1),int(rand()*23),int(rand()*59),int(rand()*59)}')
+        printf 'EVENT_%05d [%s] DEBUG cfg_token=%s token_type=read_only expired=true\n' \
+            "242" "$fake_ts2" "$(gen_fake_pass 18)"
+        for i in $(seq 243 499); do
+            local ts; ts=$(awk 'BEGIN{
+                srand('"$RANDOM"');
+                printf "2024-%02d-%02dT%02d:%02d:%02d",
+                    int(rand()*11+1), int(rand()*27+1),
+                    int(rand()*23), int(rand()*59), int(rand()*59)
             }')
             printf 'EVENT_%05d [%s] INFO  %s\n' \
                 "$i" "$ts" "${decoys[$((RANDOM % ${#decoys[@]}))]} noise_$RANDOM"
         done
     } > "$d/intercept.log"
+    # [UPGRADE UP-10] Hint no longer names the exact field or grep pattern
     meta "06" \
-"Search intercept.log for the line containing a credential value.\nThe log format is structured. One entry holds a token — find and extract it." \
-"INTERCEPT\n\n499 lines of intercepted traffic.\nOne carries a live credential embedded in a structured log field.\nThe rest is noise. A pattern exists — find it." \
+"Search intercept.log for the line containing a live credential value.\nMultiple lines may look relevant — only one is active." \
+"INTERCEPT\n\n499 lines of intercepted traffic.\nSome entries are decoys. Some are expired.\nOnly one credential is live and session-validated.\nThe log structure will reveal which is real." \
 "What command searches for a text pattern across lines of a file?" \
-"grep 'PATTERN' filename — experiment with patterns like 'token', 'cfg_token'" \
-"Solution: grep 'cfg_token' intercept.log    extract the value after '='"
+"Use grep to find lines matching a token pattern. Not every match is valid." \
+"Look at the log level and additional fields on each matching line to distinguish real from fake."
 }
 
-# [BUG-1 FIX] Dead code removed — only one block now writes frequency.dat
-# [BUG-3 FIX] Deterministic fill: 15 signals × 8 each = 120 guaranteed duplicates
-#              password is always the sole unique line — zero probability of false positives
+# ── Level 07 — FREQUENCY ──────────────────────────────────────────────────────
+# Deterministic fill preserved; shuffle seeds differ per build
 build_l07() {
     mkl "07" "$1"
     local d="$LEVELS_DIR/level07/challenge"
     {
-        # Exactly 8 copies of each of 15 distinct signals = 120 repeating lines
-        # The password line is injected once — always the sole unique result
         for sig in $(seq -w 00 14); do
             for _ in $(seq 1 8); do
                 printf 'SIG_ECHO_%s\n' "$sig"
@@ -385,78 +505,97 @@ build_l07() {
         echo "$1"
     } | _shuffle_lines > "$d/frequency.dat"
     meta "07" \
-"Find the one line in frequency.dat that is unique — appears exactly once.\nAll other lines repeat. Filter the noise." \
-"FREQUENCY\n\nRepeated noise. One clean signal.\nThe data is shuffled — tools that need sorted input will fail\nunless you give them sorted input first.\nTwo commands. One pipe." \
-"The data contains repetition—but one entry does not follow the pattern." \
-"You need a way to filter out duplicates and isolate what appears only once." \
-"Be careful: some tools only work correctly when the input is in the right order."
+"Find the one line in frequency.dat that appears exactly once.\nAll other lines repeat multiple times." \
+"FREQUENCY\n\nNoise. Repetition. Signal.\nThe data is shuffled — adjacent-line tools will not work without preprocessing.\nSort first. Then filter.\nTwo commands. One pipe. One result." \
+"What tool filters lines based on how many times they appear?" \
+"That tool has a flag that outputs only lines appearing exactly once — but it needs sorted input first." \
+"Think about what happens when you sort before filtering for uniqueness."
 }
 
+# ── Level 08 — DECODE_ALPHA ───────────────────────────────────────────────────
+# [UPGRADE UP-9] Added second encoded file with wrong content as decoy
 build_l08() {
     mkl "08" "$1"
     local d="$LEVELS_DIR/level08/challenge"
     echo "$1" | base64 > "$d/payload.dat"
+    # [UPGRADE UP-9] Decoy: also base64 but wrong content
+    echo "$(gen_fake_pass ${#1})" | base64 > "$d/payload.dat.bak"
     cat > "$d/NOTE" << 'LEOF'
-INTERCEPTED DATA PACKET
-=======================
-Payload captured from authenticated channel.
-The data is not plaintext. Identify the encoding.
-Decode it to retrieve the access code.
+INTERCEPTED DATA PACKETS
+========================
+Two encoded payloads captured from authenticated channel.
+Only one is from the active session.
+Identify the encoding scheme, decode the correct file.
 LEOF
+    # [UPGRADE UP-10] Hint no longer says "base64 encoding" directly
     meta "08" \
-"Decode the file 'payload.dat' to find the password.\nThe data is encoded — determine the encoding scheme first." \
-"DECODE_ALPHA\n\nA payload from an authenticated channel.\nNot encrypted. Just wrapped.\nThe encoding scheme leaves fingerprints — look at the character set and structure." \
-"The file doesn’t look like normal text—but it isn’t random either." \
-"Look closely at the character set and structure. Patterns matter more than meaning." \
-"This data isn’t meant to be read directly. It needs to be transformed before it makes sense."
+"Decode the file 'payload.dat' to find the password.\nA second encoded file exists — only one is authentic." \
+"DECODE_ALPHA\n\nTwo payloads. One is real.\nNeither is plaintext — both are encoded.\nThe encoding leaves fingerprints in the character set and structure.\nIdentify it. Decode it. The right one is payload.dat." \
+"Examine the file contents: what characters appear? Is there padding at the end?" \
+"Different encoding schemes produce different character sets and structural patterns." \
+"Once you identify the encoding, find the matching decode command. Apply it to the correct file."
 }
 
-# [FIX-6] L09 hints 2/3 were redundant — hint2 named cipher AND tool, hint3 was copy
-# New: hint2 identifies cipher name only; hint3 identifies the tool without full syntax
+# ── Level 09 — DECODE_BRAVO ───────────────────────────────────────────────────
+# [UPGRADE UP-9] Added second signal file with different cipher
 build_l09() {
     mkl "09" "$1"
     local d="$LEVELS_DIR/level09/challenge"
     echo "$1" | tr 'A-Za-z' 'N-ZA-Mn-za-m' > "$d/signal.dat"
+    # [UPGRADE UP-9] Decoy: ROT13 of a fake password — looks authentic
+    echo "$(gen_fake_pass ${#1})" | tr 'A-Za-z' 'N-ZA-Mn-za-m' > "$d/signal.dat.old"
     cat > "$d/NOTE" << 'LEOF'
-INTERCEPTED SIGNAL — DECODED LAYER 1
-======================================
-Outer encryption stripped. Inner layer remains.
-The content is readable ASCII but not plaintext.
-A lightweight cipher was applied.
-Reverse it.
+INTERCEPTED SIGNALS — DECODED LAYER 1
+=======================================
+Two signal files recovered. One is current. One is stale.
+Inner cipher layer remains on both.
+The active signal is in signal.dat.
+Reverse the cipher to extract the credential.
 LEOF
     meta "09" \
-"The file 'signal.dat' contains an encoded message.\nDetermine the cipher and reverse it to get the password." \
-"DECODE_BRAVO\n\nReadable characters. Meaningless text. A cipher.\nThe classic substitution. Letters shifted. The same distance as always.\nIdentify the pattern — A becomes N, B becomes O, Z becomes M.\nWhat cipher does this?" \
-"The contents aren’t random—but they aren’t readable either." \
-"The transformation is consistent across the entire file. What changes is predictable." \
-"You’re not looking for the data—you’re looking for how the data was shifted."
+"The file 'signal.dat' contains a ciphered message.\nDetermine the cipher from inspection and reverse it to get the password." \
+"DECODE_BRAVO\n\nReadable characters. Meaningless words. A cipher.\nThis one is classic — letters shifted by a fixed amount.\nStudy the pattern. A becomes N. B becomes O.\nHow many positions? Which cipher is this?" \
+"Look at signal.dat carefully. Map a few letters to see the shift pattern." \
+"This cipher is symmetric — applying it twice returns the original. The tool that translates character sets is 'tr'." \
+"Build the character mapping yourself. What does shifting each letter 13 positions look like in 'tr' syntax?"
 }
 
+# ── Level 10 — PHANTOM_SIGNAL ────────────────────────────────────────────────
+# [UPGRADE UP-9] Multiple embedded strings; only one is between real markers
 build_l10() {
     mkl "10" "$1"
     local d="$LEVELS_DIR/level10/challenge"
     {
-        head -c 256 /dev/urandom 2>/dev/null
+        head -c 128 /dev/urandom 2>/dev/null
+        # [UPGRADE UP-9] Fake key block to trap hasty players
+        printf '\n===BEGIN_KEY===\n%s\n===END_KEY===\n' "$(gen_fake_pass ${#1})"
+        head -c 128 /dev/urandom 2>/dev/null
         printf '\n===BEGIN_KEY===\n%s\n===END_KEY===\n' "$1"
-        head -c 256 /dev/urandom 2>/dev/null
+        head -c 128 /dev/urandom 2>/dev/null
+        # Another fake embedded string
+        printf '\nKEY_CANDIDATE=%s\n' "$(gen_fake_pass ${#1})"
+        head -c 128 /dev/urandom 2>/dev/null
     } > "$d/firmware.bin"
     cat > "$d/ANALYST_NOTE" << 'LEOF'
 FIRMWARE IMAGE — BUILD 7731
 ============================
 Binary blob extracted from device.
-Intel suggests a plaintext credential was embedded
-during the development build process.
-Standard forensic extraction applies.
+Multiple strings embedded during development.
+Only one is the active credential.
+Not every readable string is the answer.
+Intel suggests the real one is the SECOND occurrence.
 LEOF
+    # [UPGRADE UP-10] Hint no longer names the markers
     meta "10" \
-"Extract the plaintext credential embedded in binary file 'firmware.bin'.\nThe surrounding file is binary — you cannot safely read it directly." \
-"PHANTOM_SIGNAL\n\nA firmware image. Mostly noise.\nSomewhere inside: human-readable text.\nBinary files contain printable strings — there are tools that surface them." \
-"The file isn’t meant to be read as plain text—but not all of it is meaningless." \
-"Buried within the noise are fragments that *are* readable. You need a way to isolate them." \
-"Don’t try to interpret the whole file—extract only what the system would consider printable."
+"Extract the plaintext credential embedded in binary file 'firmware.bin'.\nMultiple readable strings exist — only one is the active credential." \
+"PHANTOM_SIGNAL\n\nA firmware image. Noise and signal.\nMultiple readable strings are embedded.\nThe development team left markers around the real one.\nNot every string you find is the answer." \
+"What command extracts human-readable strings from a binary file?" \
+"Use that command and examine all output carefully. Look for structured markers or patterns." \
+"The active credential appears after a specific marker sequence. Find the pattern that surrounds the real one."
 }
 
+# ── Level 11 — THE_MAZE ───────────────────────────────────────────────────────
+# Randomized placement; decoys scattered throughout
 build_l11() {
     mkl "11" "$1"
     local d="$LEVELS_DIR/level11/challenge"
@@ -468,45 +607,58 @@ build_l11() {
             mkdir -p "$d/$dir/$sub"
             dd if=/dev/urandom bs=1 count=$((RANDOM%300+100)) \
                of="$d/$dir/$sub/datafile" 2>/dev/null
-            [[ $(( RANDOM % 3 )) -eq 0 ]] && echo "EXPIRED_$(gen_pass)" > "$d/$dir/$sub/target.old"
-            [[ $(( RANDOM % 4 )) -eq 0 ]] && echo "INVALID_$(gen_pass)" > "$d/$dir/$sub/target.bak"
+            [[ $(( RANDOM % 3 )) -eq 0 ]] && \
+                echo "EXPIRED_$(gen_fake_pass 16)" > "$d/$dir/$sub/target.old"
+            [[ $(( RANDOM % 4 )) -eq 0 ]] && \
+                echo "INVALID_$(gen_fake_pass 16)" > "$d/$dir/$sub/target.bak"
+            # [UPGRADE UP-9] Occasional 'target' file with wrong content as deep trap
+            [[ $(( RANDOM % 6 )) -eq 0 && "$dir/$sub" != "$tgt_dir" ]] && \
+                echo "$(gen_fake_pass ${#1})" > "$d/$dir/$sub/target"
         done
     done
     echo "$1" > "$d/$tgt_dir/target"
     meta "11" \
-"A file named 'target' exists somewhere in the directory tree.\nDecoy files with similar names exist. Find the real one and read it." \
-"THE_MAZE\n\nDozens of directories. Hundreds of files.\nSome named to confuse — target.old, target.bak, the wrong 'target'.\nOnly one file named exactly 'target' (no extension) holds the real key.\nManual navigation is futile. Use a recursive search." \
-"The file you need isn’t in your immediate view." \
-"It exists somewhere within this directory structure—you need to search for it." \
-"Use a method that recursively explores directories and locates files by name."
+"A file named 'target' exists somewhere in the directory tree.\nDecoy files with identical or similar names also exist.\nFind and read the authentic one." \
+"THE_MAZE\n\nDozens of directories. Hundreds of files.\nSome decoys use the exact same name.\nNot every 'target' is real.\nThe authentic file is in exactly one location — find it systematically." \
+"How do you search an entire directory tree for files matching a specific name?" \
+"There is a command for recursive file search. It supports filtering by exact name and file type." \
+"Use exact name matching. If multiple results appear, cross-reference with what you know about the structure."
 }
 
-# [FIX-5] L12 hint3 previously revealed exact layer sequence ("Three layers: gunzip → bunzip2 → gunzip")
-# New: hint3 explains the rename workflow without disclosing layer count or order
+# ── Level 12 — DEEP_ARCHIVE ───────────────────────────────────────────────────
+# [UPGRADE UP-9] Added decoy archive that decompresses to a fake password
 build_l12() {
     mkl "12" "$1"
     local d="$LEVELS_DIR/level12/challenge"
     local tmp; tmp=$(mktemp -d)
+    # Real archive — 3 layers
     echo "$1"             > "$tmp/core"
     gzip  -c "$tmp/core"  > "$tmp/l1"
     bzip2 -c "$tmp/l1"    > "$tmp/l2"
     gzip  -c "$tmp/l2"    > "$d/archive.gz"
+    # [UPGRADE UP-9] Decoy archive — 2 layers, wrong content
+    echo "$(gen_fake_pass ${#1})" > "$tmp/fake_core"
+    gzip -c "$tmp/fake_core" > "$tmp/fake_l1"
+    bzip2 -c "$tmp/fake_l1" > "$d/archive_backup.bz2"
     rm -rf "$tmp"
     cat > "$d/NOTE" << 'LEOF'
-DATA ARCHIVE — ORIGIN UNKNOWN
-==============================
-Compressed artifact recovered from exfiltrated storage.
-Contents: unknown.
-Extraction method: determine from content.
+DATA ARCHIVES — ORIGIN UNKNOWN
+================================
+Two compressed artifacts recovered.
+archive.gz is the primary target.
+archive_backup.bz2 is a backup — contents may differ.
+Determine extraction method from content.
 LEOF
     meta "12" \
-"Decompress archive.gz until you reach plaintext.\nThe archive has multiple layers — use 'file' after each step to identify the next format." \
-"DEEP_ARCHIVE\n\nA compressed archive. But how many layers?\nYou don't know until you start peeling.\nEach layer could be anything — the file command is your only guide.\nPeel. Identify. Rename. Repeat." \
-"What you’re looking at isn’t a single layer." \
-"Each step reveals something new—but only if you understand what you’re dealing with." \
-"Do not assume the format. Identify, act accordingly, and repeat until nothing remains hidden."
+"Decompress archive.gz until you reach plaintext.\nMultiple archives exist — work only on archive.gz.\nUse 'file' after each step to identify the next format." \
+"DEEP_ARCHIVE\n\nA compressed archive. How many layers?\nYou cannot know until you start peeling.\nA backup exists too — but it is not the target.\nfile is your compass. Use it after every step." \
+"Work in /tmp to avoid cluttering the challenge directory. Start: cp archive.gz /tmp/ && cd /tmp" \
+"Each decompression may produce a file needing a different tool. Rename with correct extension first." \
+"Let file reveal each layer type. Do not guess the sequence. Rename, decompress, check, repeat."
 }
 
+# ── Level 13 — SETUID_HUNT ────────────────────────────────────────────────────
+# [UPGRADE UP-9] Added SGID files as visual decoys (look similar to SUID in ls)
 build_l13() {
     mkl "13" "$1"
     local d="$LEVELS_DIR/level13/challenge"
@@ -522,24 +674,31 @@ build_l13() {
                 || chmod 644 "$d/proc_$i"
         fi
     done
+    # [UPGRADE UP-9] SGID decoy — ls output shows 's' in group field, not owner
+    # Hasty players mistake SGID for SUID; find -perm -4000 will NOT match it
+    local sgid_decoy=$(( (suid_target % 9) + 1 ))
+    [[ $sgid_decoy -eq $suid_target ]] && sgid_decoy=$(( sgid_decoy % 9 + 1 ))
+    echo "$(gen_fake_pass ${#1})" > "$d/proc_${sgid_decoy}"
+    chmod 2755 "$d/proc_${sgid_decoy}" 2>/dev/null || chmod 755 "$d/proc_${sgid_decoy}"
     cat > "$d/README" << 'LEOF'
 POST-EXPLOITATION INTEL
 ========================
 Shell access confirmed on target node.
 Nine processes registered in the runtime directory.
 One binary runs with elevated privileges.
-Identify which one. Read its contents.
+Other files may appear privileged — verify the exact bit.
 
 Privilege escalation begins with enumeration.
 LEOF
     meta "13" \
-"One of the nine proc files has the SUID bit set (runs with elevated privileges).\nFind it using file permission filtering, then read it." \
-"SETUID_HUNT\n\nNine files. One elevated.\nVisual inspection of ls output will show you — if you know what to look for.\nOr enumerate programmatically. The SUID bit (4000) is your target.\nThis is how every privilege escalation audit begins." \
-"Something here operates with more privilege than it should." \
-"Permissions can reveal behavior—look closely for anything that doesn’t match the usual pattern." \
-"Search the directory tree for files with unusual execution characteristics, then inspect what you find."
+"One of the nine proc files has the SUID bit set (owner execute = 's').\nOther files may look similar. Find the one with the correct privilege bit." \
+"SETUID_HUNT\n\nNine binaries. One is elevated. One is a trap.\nBoth show 's' in ls output — but not in the same position.\nSUID runs as the file's owner. SGID runs as the file's group.\nOnly one of those is what you need." \
+"SUID bit value is 4000. SGID bit value is 2000. They appear differently in ls -l output." \
+"Use find with a permission filter. Make sure you filter for the SUID bit, not just any special bit." \
+"The correct filter tests for owner execute position. Verify your find flag targets octal 4000 specifically."
 }
 
+# ── Level 14 — SIGNAL_DROP ────────────────────────────────────────────────────
 build_l14() {
     mkl "14" "$1" "1"
     local d="$LEVELS_DIR/level14/challenge"
@@ -558,28 +717,32 @@ The credential is embedded in the packet.
 Note: the server broadcasts for a limited number of connections.
 LEOF
     meta "14" \
-"Connect to localhost port 4444 and capture the transmitted credential." \
-"SIGNAL_DROP\n\nA signal is broadcasting. Right here. This machine.\nPort 4444. No internet required.\nYou just need to know how to open a wire and listen." \
-"Something on this system is actively listening—you won’t find the answer in files." \
-"The information is being served, not stored. You need to connect to receive it." \
-"Identify where the service is listening, then interact with it to capture the data."
+"Connect to localhost port 4444 and capture the transmitted credential.\nExtract only the credential value from the packet." \
+"SIGNAL_DROP\n\nA signal broadcasts on the loopback.\nNo internet. No remote server.\nEverything you need is on this machine.\nKnow how to reach it." \
+"What tool connects to a TCP port and reads the response?" \
+"netcat is the standard tool. Bash also has a built-in TCP mechanism via /dev/tcp." \
+"The packet contains more than just the credential. Parse the output carefully."
 }
 
-# [FIX-7] L15 hint3 previously named exact target path and filename
-# New: hint3 describes identifying criteria (length) without naming the file
+# ── Level 15 — DEAD_DROP ──────────────────────────────────────────────────────
+# [UPGRADE UP-9] More hidden files; added a .vault dir with another fake
 build_l15() {
     mkl "15" "$1"
     local d="$LEVELS_DIR/level15/challenge"
-    mkdir -p "$d/.ssh" "$d/.config" "$d/.cache"
+    mkdir -p "$d/.ssh" "$d/.config" "$d/.cache" "$d/.vault"
     echo -e '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAFAKEDATA\nTRUNCATED\n-----END RSA PRIVATE KEY-----' \
         > "$d/.ssh/id_rsa"
     echo 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAB... operative@nexus' > "$d/.ssh/id_rsa.pub"
     printf 'Host nexus-*\n  User operative\n  IdentityFile ~/.ssh/id_rsa\n' > "$d/.ssh/config"
-    echo "$1" > "$d/.ssh/credentials"
+    echo "$1"                              > "$d/.ssh/credentials"
     chmod 600 "$d/.ssh/credentials"
-    echo "STALE_$(gen_pass)" > "$d/.ssh/credentials.old"
+    echo "STALE_$(gen_fake_pass 16)"       > "$d/.ssh/credentials.old"
+    echo "$(gen_fake_pass ${#1})"          > "$d/.ssh/id_rsa_pass"
     printf '[prefs]\ntheme=dark\nlog=verbose\nalert=true\n' > "$d/.config/settings"
     printf 'last_sync=1709823600\nnode_id=nx-7731\n' > "$d/.cache/state"
+    # [UPGRADE UP-9] .vault decoy with lookalike password
+    echo "$(gen_fake_pass ${#1})"          > "$d/.vault/access_key"
+    chmod 600 "$d/.vault/access_key"
     cat > "$d/README" << 'LEOF'
 FIELD OPERATIVE DEAD DROP
 ==========================
@@ -587,20 +750,24 @@ Credentials were cached at this location by a field agent.
 Multiple hidden directories. Multiple files.
 Standard enumeration applies.
 Not everything here is current or valid.
+Exactly one file contains a valid active credential.
 LEOF
     meta "15" \
-"Credentials are stored in a hidden directory. Enumerate all hidden files and directories.\nOnly one file contains a valid 20-character access code." \
-"DEAD_DROP\n\nHidden directories. Multiple credential files.\nSome expired. Some fake. One live.\nYou cannot read their names — you have to look for them.\nEnumerate everything. Hidden included." \
-"What you’re looking for isn’t immediately visible—and it’s not in just one place." \
-"Explore beyond the obvious. Some paths require a different way of listing to even appear." \
-"Multiple candidates may look valid. Only one follows a consistent pattern—identify it carefully."
+"Credentials are stored across multiple hidden directories.\nEnumerate all hidden files and directories to find the one valid access code." \
+"DEAD_DROP\n\nMultiple hidden directories. Multiple files.\nSome are decoys. Some are expired. One is live.\nYou must look everywhere before you can know.\nEnumerate systematically — not randomly." \
+"How do you reveal hidden directories and their contents in a single directory listing?" \
+"Explore each hidden directory individually. Multiple hidden dirs exist at different depths." \
+"A valid credential has a specific format and length. Read each file — the authentic one will stand out."
 }
 
+# ── Level 16 — CRONTAB ────────────────────────────────────────────────────────
+# [UPGRADE UP-9] Third decoy credential that looks more like a real token
 build_l16() {
     mkl "16" "$1"
     local d="$LEVELS_DIR/level16/challenge"
-    local decoy1; decoy1=$(gen_pass)
-    local decoy2; decoy2=$(gen_pass)
+    local decoy1; decoy1=$(gen_fake_pass 20)
+    local decoy2; decoy2=$(gen_fake_pass 18)
+    local decoy3; decoy3=$(gen_fake_pass 22)
     mkdir -p "$d/cron.d"
     cat > "$d/cron.d/backup.sh" << CEOF
 #!/bin/bash
@@ -623,6 +790,7 @@ CEOF
 DB_HOST="db-primary.nexus.internal"
 DB_PORT=5432
 DB_PASS="$decoy2"
+NX_MONITOR_KEY="$decoy3"
 pg_isready -h "\$DB_HOST" -p "\$DB_PORT" 2>/dev/null && echo "DB:UP" || echo "DB:DOWN"
 CEOF
     cat > "$d/cron.d/collector.sh" << CEOF
@@ -639,14 +807,16 @@ CEOF
 */5 * * * *  /opt/nexus/cron.d/healthcheck.sh
 */15 * * * * /opt/nexus/cron.d/collector.sh
 CEOF
+    # [UPGRADE UP-10] Hint no longer names NX_CONN_TOKEN directly
     meta "16" \
-"A live credential is hardcoded in one of the scripts in cron.d/.\nAll four scripts contain credential-looking values — find the active one." \
-"CRONTAB\n\nFour scheduled jobs. Three have credentials.\nOnly one token is live and current.\nDevelopers often hardcode — then forget.\nSearch the code. Not every match is valid." \
-"The information you need is embedded within configuration data." \
-"Look for patterns that resemble credentials—names, assignments, or structured values." \
-"Search across the directory and isolate the line that actually defines the value—not just mentions it."
+"A live credential is hardcoded in one of the scripts in cron.d/.\nFour scripts contain credential-looking values. Only one is active." \
+"CRONTAB\n\nFour scripts. Multiple credentials.\nMost are infrastructure secrets — not what you need.\nThe active token has a specific naming convention and purpose.\nSearch all scripts. Then determine which value is the live access token." \
+"How do you search for patterns across multiple files in a directory recursively?" \
+"grep -r searches all files. Look for variable names containing TOKEN, KEY, or similar patterns." \
+"Compare the variable names and context. The active one is used for outbound authentication — not storage or monitoring."
 }
 
+# ── Level 17 — ENV_LEAK ───────────────────────────────────────────────────────
 build_l17() {
     mkl "17" "$1" "1"
     local d="$LEVELS_DIR/level17/challenge"
@@ -668,20 +838,24 @@ nexus_cfg = {k: v for k, v in os.environ.items() if k.startswith('NEXUS_')}
 print(f"[+] Loaded {len(nexus_cfg)} NEXUS runtime parameters")
 LEOF
     meta "17" \
-"A credential has leaked into the shell environment variables.\nEnumerate ALL NEXUS_* variables — identify which value is the actual access token." \
-"ENV_LEAK\n\nThe process left its secrets in the open air.\nMultiple configuration values. One is a credential.\nThey all look plausible. Only one is the token.\nList the environment. Read each value. Decide which is real." \
-"The system is already holding the information—you just haven’t looked in the right place." \
-"Not all data comes from files. Some values exist only within the current environment." \
-"Identify what stands out from the rest—one value is clearly not configuration, but a generated secret."
+"A credential has leaked into the shell environment variables.\nEnumerate all NEXUS_* variables and identify which one is the actual access token." \
+"ENV_LEAK\n\nThe process left its secrets in open air.\nMany configuration values. Only one is a credential.\nConfig values look like settings. Credentials look like random strings.\nEnumerate. Distinguish. Submit the right one." \
+"What command lists environment variables? What can you use to filter by prefix?" \
+"env or printenv will list all variables. Pipe through grep to filter by naming convention." \
+"Configuration values follow predictable patterns. A token looks different — examine each NEXUS_* value carefully."
 }
 
+# ── Level 18 — WEB_OF_LIES ────────────────────────────────────────────────────
+# [UPGRADE UP-9] Two ASCII text files — one is JSON (parseable), one is the credential
 build_l18() {
     mkl "18" "$1"
     local d="$LEVELS_DIR/level18/challenge"
     echo "$1"                                      > "$d/report_final.exe"
     head -c $(( RANDOM % 200 + 100 )) /dev/urandom > "$d/config.txt"
     head -c $(( RANDOM % 200 + 100 )) /dev/urandom > "$d/readme.md"
-    printf '{"status":"ok","checksum":"d41d8cd9"}' > "$d/manifest.json"
+    # [UPGRADE UP-9] JSON file also reports as ASCII text but is clearly not a password
+    printf '{"status":"ok","build":"7731","checksum":"d41d8cd9f00b204e9800998ecf8427e","ts":1709823600}' \
+        > "$d/manifest.json"
     printf '\x7fELF\x02\x01\x01'                  > "$d/launcher.sh"
     head -c $(( RANDOM % 150 + 100 )) /dev/urandom >> "$d/launcher.sh"
     head -c $(( RANDOM % 180 + 80  )) /dev/urandom > "$d/data.bin"
@@ -691,79 +865,113 @@ INCIDENT REPORT — FILE ANALYSIS REQUIRED
 Six files recovered from compromised endpoint.
 File extensions have been modified post-exfiltration.
 Extensions are unreliable. Content must be verified directly.
-One file contains a recoverable credential.
-Standard forensic protocols apply.
+A recoverable credential exists in one file.
+Not every readable file is a credential.
 LEOF
     meta "18" \
-"Six files with potentially misleading extensions.\nOne contains a readable credential — identify it without trusting filenames or extensions." \
-"WEB_OF_LIES\n\nExtensions were tampered with. Names lie.\nA .txt is not text. A .exe is not executable. A .sh is not a script.\nOnly the actual content tells the truth.\nWhich tool bypasses names and reads raw file signatures?" \
-"Names can be misleading—the answer isn’t where it appears to be." \
-"Several files may look similar, but only one actually contains meaningful data." \
-"Don’t trust how things are labeled. Identify what each file truly is, then inspect the right one."
+"Six files with potentially misleading extensions.\nOne contains a raw credential. Identify it without trusting filenames or extensions." \
+"WEB_OF_LIES\n\nExtensions lie. Names lie.\nSome files are readable but still not credentials.\nYou need the one that IS the access code — not just any readable file.\nThe tool that reads file signatures is only your first step." \
+"What command identifies file types based on internal content rather than extension?" \
+"Use it on all files. Multiple files may appear readable — distinguish credential from structured data." \
+"A credential is a raw string. Structured data has syntax. The difference is visible when you cat each readable file."
 }
 
+# ── Level 19 — HEX_GHOST ─────────────────────────────────────────────────────
+# [UPGRADE UP-9] Multiple encoded strings; only one decodes to a valid password
 build_l19() {
     mkl "19" "$1"
     local d="$LEVELS_DIR/level19/challenge"
     local encoded; encoded=$(echo -n "$1" | base64 | tr -d '\n')
+    # [UPGRADE UP-9] Fakes use pure random bytes — decode to ~3-4 alphanum chars
+    # after tr -dc A-Za-z0-9, clearly too short to be a valid password (14-28 chars)
+    local fake1; fake1=$(head -c 16 /dev/urandom 2>/dev/null | base64 | tr -d '\n')
+    local fake2; fake2=$(head -c 16 /dev/urandom 2>/dev/null | base64 | tr -d '\n')
     {
-        head -c 384 /dev/urandom 2>/dev/null
+        head -c 192 /dev/urandom 2>/dev/null
+        # First fake — between FEED/FACE markers, decodes to binary garbage
+        printf '\xFE\xED\xFA\xCE'
+        printf '%s' "$fake1"
+        printf '\xFE\xED\xFA\xCE'
+        head -c 192 /dev/urandom 2>/dev/null
+        # Real credential — between DEAD/CAFE markers (primary session markers)
         printf '\xDE\xAD\xBE\xEF'
         printf '%s' "$encoded"
         printf '\xCA\xFE\xBA\xBE'
-        head -c 384 /dev/urandom 2>/dev/null
+        head -c 192 /dev/urandom 2>/dev/null
+        # Second fake — between BAAD/F00D markers, also decodes to binary garbage
+        printf '\xBA\xAD\xF0\x0D'
+        printf '%s' "$fake2"
+        printf '\xBA\xAD\xF0\x0D'
+        head -c 192 /dev/urandom 2>/dev/null
     } > "$d/memdump.bin"
     cat > "$d/NOTE" << 'LEOF'
 MEMORY DUMP — NEXUS CORE PROCESS (PID 1337)
 Captured: 03:17:44 UTC
 
 Analyst notes:
-  A credential artifact is present in this memory snapshot.
-  The value is encoded — it will not be immediately recognizable.
+  Multiple credential artifacts present in this snapshot.
+  Only one is active. The others are stale session tokens.
+  The active credential is bounded by the primary memory markers.
   Locate it. Decode it. That is the access code.
 LEOF
     meta "19" \
-"A credential is embedded in binary 'memdump.bin'.\nIt is encoded — extract the encoded form, then decode it to get the password." \
-"HEX_GHOST\n\nMemory doesn't lie. But it speaks in code.\nA credential is in there — but not in plaintext.\nTwo steps: extract the encoded artifact, then reverse the encoding.\nBinary tools surface it. A decoder finalizes it." \
-"The data looks chaotic, but fragments of meaning are buried within it." \
-"Among the readable pieces, one stands out—it doesn’t look like plain text." \
-"Extract what you can, then identify which fragment needs to be transformed before it makes sense."
+"A credential is embedded in binary 'memdump.bin'.\nMultiple encoded strings exist — only one is the active credential.\nExtract the correct one and decode it." \
+"HEX_GHOST\n\nMemory holds many secrets.\nMultiple encoded strings. Multiple sets of markers.\nOnly one set of markers indicates the primary active session.\nExtract. Identify. Decode. Not every result is correct." \
+"'strings' extracts printable text from binary files. Multiple results may look like encoded data." \
+"Each encoded artifact is bounded by different memory markers. Identify the correct pair of markers." \
+"Decode each candidate. A valid credential has a specific length and character set. Only one will be correct."
 }
 
+# ── Level 20 — PIPELINE ───────────────────────────────────────────────────────
+# [UPGRADE UP-9] Added second admin-role entry with wrong (non-base64) token
 build_l20() {
     mkl "20" "$1"
     local d="$LEVELS_DIR/level20/challenge"
     local encoded; encoded=$(echo -n "$1" | base64 | tr -d '\n')
+    # [UPGRADE UP-9] Fake admin with a non-base64 token — decodes to garbage
+    local fake_tok; fake_tok=$(gen_fake_pass 20)
     {
-        for i in $(seq 1 40); do
+        for i in $(seq 1 20); do
             local roles=("analyst" "observer" "auditor" "monitor" "reporter")
             local role="${roles[$((RANDOM % 5))]}"
             local tok; tok=$(head -c 12 /dev/urandom 2>/dev/null | base64 | tr -d '=\n' | head -c 16)
             printf 'USER:agent_%03d|ROLE:%s|ACCESS:LEVEL_%d|TOKEN:%s|STATUS:inactive\n' \
                 "$i" "$role" "$(( RANDOM % 3 + 1 ))" "$tok"
         done
+        # [UPGRADE UP-9] Fake admin — wrong token, STATUS:suspended
+        printf 'USER:ghost_admin|ROLE:admin|ACCESS:LEVEL_5|TOKEN:%s|STATUS:suspended\n' "$fake_tok"
+        for i in $(seq 21 40); do
+            local roles=("analyst" "observer" "auditor" "monitor" "reporter")
+            local role="${roles[$((RANDOM % 5))]}"
+            local tok; tok=$(head -c 12 /dev/urandom 2>/dev/null | base64 | tr -d '=\n' | head -c 16)
+            printf 'USER:agent_%03d|ROLE:%s|ACCESS:LEVEL_%d|TOKEN:%s|STATUS:inactive\n' \
+                "$i" "$role" "$(( RANDOM % 3 + 1 ))" "$tok"
+        done
+        # Real admin — STATUS:active distinguishes it
         printf 'USER:shadow_root|ROLE:admin|ACCESS:LEVEL_5|TOKEN:%s|STATUS:active\n' "$encoded"
     } | _shuffle_lines > "$d/personnel.db"
     cat > "$d/README" << 'LEOF'
 NEXUS OPERATIVE REGISTRY — PERSONNEL DATABASE
 Format: USER:<id>|ROLE:<role>|ACCESS:<level>|TOKEN:<value>|STATUS:<state>
 
-41 operative records. One account has administrative access.
-The administrative account's token is encoded.
+42 operative records. Two accounts have administrator role.
+Only one is active. The other is suspended.
+The active administrator's token is encoded.
 Your access code is the decoded token value.
 
 Build the extraction pipeline.
 LEOF
     meta "20" \
-"Extract the admin's encoded TOKEN from personnel.db and decode it.\nBuild a command pipeline to: find the admin line, extract the TOKEN field, decode it." \
-"PIPELINE\n\nForty-one records. One admin. One encoded token.\nRaw data means nothing until you shape it.\nEach pipe stage refines — filter, extract, decode.\nBuild the chain." \
-"The answer isn’t in a single step—it’s hidden behind a sequence of transformations." \
-"You’ll need to locate the right record, isolate the relevant portion, and process it further." \
-"Think in stages: find → extract → transform. Build the chain carefully."
+"Extract the ACTIVE admin's encoded TOKEN from personnel.db and decode it.\nTwo admin entries exist — only one is active. Build a pipeline to extract and decode the correct one." \
+"PIPELINE\n\nForty-two records. Two admins. One active. One suspended.\nRaw data tells you nothing until you shape it.\nEach pipe stage cuts closer to truth.\nFilter. Narrow. Extract. Decode. In the right order." \
+"You need to filter by role, then by status, then extract the TOKEN field, then decode the value." \
+"Multiple pipe stages: grep can filter twice. Field extraction uses cut or grep -o. base64 handles decoding." \
+"Chain your commands. If you get two results from grep, add another filter. The STATUS field distinguishes the real one."
 }
 
 # =============================================================================
 # NETWORK SERVER — CROSS-PLATFORM (Level 14)
+# [UPGRADE UP-8] Replaced non-portable nc flags with universally compatible ones
 # =============================================================================
 
 _NC_MODE=""
@@ -772,8 +980,14 @@ _detect_nc_mode() {
     [[ -n "$_NC_MODE" ]] && return
     if command -v nc >/dev/null 2>&1; then
         local h; h=$(nc --help 2>&1; nc -h 2>&1; true)
-        if echo "$h" | grep -q '\-q '; then _NC_MODE="gnu"
-        else                                 _NC_MODE="bsd"; fi
+        # [UPGRADE UP-8] Detect mode without relying on -lvnp/-q flags
+        if echo "$h" | grep -q '\-q '; then
+            _NC_MODE="gnu"
+        elif echo "$h" | grep -q 'OpenBSD\|BSD'; then
+            _NC_MODE="bsd"
+        else
+            _NC_MODE="bsd"   # Safe fallback — most minimal nc variants accept -l PORT
+        fi
     elif command -v ncat >/dev/null 2>&1; then
         _NC_MODE="ncat"
     else
@@ -783,10 +997,14 @@ _detect_nc_mode() {
 
 _nc_serve_once() {
     local port="$1" msg="$2"
+    # [UPGRADE UP-8] Universally compatible nc invocations
+    # GNU nc:    nc -l -p PORT      (no -v/-n/-q in minimal installs)
+    # BSD nc:    nc -l PORT         (OpenBSD-style, Termux)
+    # ncat:      ncat -l PORT       (nmap's nc replacement)
     case "$_NC_MODE" in
-        gnu)  printf '%s\n' "$msg" | nc  -lvnp "$port" -q 1        2>/dev/null; return 0 ;;
-        bsd)  printf '%s\n' "$msg" | nc  -lp   "$port"             2>/dev/null; return 0 ;;
-        ncat) printf '%s\n' "$msg" | ncat --send-only -lp "$port"  2>/dev/null; return 0 ;;
+        gnu)  printf '%s\n' "$msg" | nc   -l -p "$port"         2>/dev/null; return 0 ;;
+        bsd)  printf '%s\n' "$msg" | nc   -l    "$port"         2>/dev/null; return 0 ;;
+        ncat) printf '%s\n' "$msg" | ncat -l    "$port" --send-only 2>/dev/null; return 0 ;;
         none) return 1 ;;
     esac
 }
@@ -800,11 +1018,13 @@ _start_level_server() {
         pw "Install: apt install netcat   (Termux: pkg install netcat)"
         return 1
     fi
-    local plain; plain=$(cat "$LEVELS_DIR/level14/.plain" 2>/dev/null || echo "SETUP_ERROR")
+    # [UPGRADE UP-3] Read plain from CORE_DIR
+    local plain; plain=$(_read_core "$CORE_DIR/14.plain")
+    [[ -z "$plain" ]] && plain="SETUP_ERROR"
     rm -f "$GAME_DIR/.server_pid"
-    ( for _ in 1 2 3 4 5 6 7 8; do
+    ( for _ in 1 2 3 4 5 6 7 8 9 10 12 14 16 18 20; do
           _nc_serve_once "$NET_PORT" "NEXUS_PACKET:${plain}"
-          sleep 0.5
+          sleep 0.3
       done ) &
     echo $! > "$GAME_DIR/.server_pid"
 }
@@ -817,7 +1037,7 @@ _stop_level_server() {
 }
 
 # =============================================================================
-# GAME SHELL — TIME AUTHORITY + PERSISTENT HINTS
+# GAME SHELL — TIME AUTHORITY + PERSISTENT HINTS + SANDBOX + LOGGING
 # =============================================================================
 
 launch_shell() {
@@ -829,16 +1049,15 @@ launch_shell() {
 
     _start_level_server "$lvl"
 
-    # [BUG-4 FIX] Load saved hint count for this level — initialise .hints file
-    # so hint count persists even if player exits without submitting
+    # Restore saved hint count for this level
     local saved_hint_var="HINTS_L${lvl}"
     local saved_hints="${!saved_hint_var:-0}"
     : > "$SAVE_DIR/.hints"
     for (( h=0; h<saved_hints; h++ )); do echo "1" >> "$SAVE_DIR/.hints"; done
 
-    # ── .gi: expanded heredoc (runtime values) ────────────────────────────────
+    # ── .gi: expanded heredoc (runtime values written at launch time) ──────────
     local p17=""
-    [[ "$lvl" == "17" ]] && p17=$(cat "$LEVELS_DIR/level17/.plain" 2>/dev/null || echo "")
+    [[ "$lvl" == "17" ]] && p17=$(_read_core "$CORE_DIR/17.plain")
     local timed_val="${TIMED_MODE:-0}"
 
     cat > "$GAME_DIR/.gi" << GIEOF
@@ -848,9 +1067,12 @@ _NX_TIMED="$timed_val"
 _NX_LIMIT=$limit
 _NX_START=\$(date +%s)
 _NX_COST=$cost
+_NX_JAIL="$cdir"
+_NX_CORE="$GAME_DIR/.core"
+_NX_LOG="$GAME_DIR/logs/.cmdlog"
 GIEOF
 
-    # Level 17: inject env vars (intentional challenge — many plausible values)
+    # Level 17: inject environment variables
     if [[ "$lvl" == "17" && -n "$p17" ]]; then
         cat >> "$GAME_DIR/.gi" << ENVEOF
 export NEXUS_SESSION_TOKEN="$p17"
@@ -867,13 +1089,63 @@ export AWS_ACCESS_KEY_ID="AKIAIOSFODNN7EXAMPLE"
 ENVEOF
     fi
 
-    # ── .gf: single-quoted heredoc (game functions — no expansion) ─────────────
+    # ── .gf: single-quoted heredoc — static game functions, NO expansion ───────
     cat > "$GAME_DIR/.gf" << 'GFEOF'
 source "$HOME/.nexus/.gi" 2>/dev/null || true
 
 _LD="$_NX_DIR/levels/level$_NX_LVL"
 
-# ── [TIME AUTHORITY] Timer with 10-second psychological pressure ──────────────
+# [UPGRADE UP-4] Internal core file reader — same temp-unlock logic as outer shell
+_read_core_shell() {
+    local file="$1"
+    [[ ! -e "$file" ]] && return 1
+    chmod 400 "$file" 2>/dev/null
+    local c; c=$(cat "$file" 2>/dev/null)
+    chmod 000 "$file" 2>/dev/null
+    printf '%s' "$c"
+}
+
+# [UPGRADE UP-7] PASSIVE CHEAT LOGGING — DEBUG trap records all commands
+# Does NOT block anything — purely observational
+# Filters out internal/system commands to keep log readable
+mkdir -p "$(dirname "$_NX_LOG")" 2>/dev/null
+trap '
+    case "$BASH_COMMAND" in
+        _*|source*|true|false|:|\[*|local*|printf*|echo*) ;;
+        *) printf "[%s] LVL:%s  %s\n" "$(date +%H:%M:%S)" "$_NX_LVL" "$BASH_COMMAND" \
+               >> "$_NX_LOG" 2>/dev/null ;;
+    esac
+' DEBUG
+
+# [UPGRADE UP-6] SOFT SANDBOXING — override cd to restrict navigation
+# Allows movement within challenge dir and /tmp (needed for L12 decompression)
+# Redirects with a message if player tries to leave the challenge scope
+cd() {
+    local target="${1:-.}"
+    local new_dir
+    # Resolve the target path using a subshell to get absolute form
+    new_dir=$(builtin cd "$target" 2>/dev/null && pwd)
+    if [[ -z "$new_dir" ]]; then
+        echo -e "\033[1;31m[NEXUS] Directory not found: $target\033[0m" >&2
+        return 1
+    fi
+    case "$new_dir" in
+        "$_NX_JAIL"|"$_NX_JAIL"/*)
+            # Within challenge directory — always allowed
+            builtin cd "$new_dir" ;;
+        /tmp|/tmp/*)
+            # /tmp allowed for decompression tasks (L12 etc.)
+            builtin cd "$new_dir" ;;
+        *)
+            # Outside scope — soft block with informative message
+            echo -e "\033[1;33m[NEXUS] Navigation outside the challenge scope is restricted.\033[0m"
+            echo -e "\033[2m  Challenge dir: $_NX_JAIL\033[0m"
+            echo -e "\033[2m  /tmp is also available for temporary work.\033[0m"
+            return 1 ;;
+    esac
+}
+
+# ── Timer system ──────────────────────────────────────────────────────────────
 if [[ "$_NX_TIMED" == "1" ]]; then
 
     _update_timer() {
@@ -885,14 +1157,12 @@ if [[ "$_NX_TIMED" == "1" ]]; then
         _s=$(( _left % 60 ))
 
         if [[ $_left -le 0 ]]; then
-            # Hard expiry — enforce via signal file and exit
             printf '\n\033[1;31m╔══════════════════════════════════════════╗\n'
             printf   '║  ⛔  NEXUS: TIME EXPIRED — ACCESS DENIED  ║\n'
             printf   '╚══════════════════════════════════════════╝\033[0m\n'
             echo "TIMEOUT" > "$_NX_DIR/save/.timeout"
             exit 1
         elif [[ $_left -le 10 ]]; then
-            # Final 10 seconds — maximum pressure
             PS1="\[\033[1;31m\]\[\033[5m\][⚠ FINAL ${_left}s !!!]\[\033[0m\]\[\033[1;31m\] \w\[\033[0m\]\$ "
         elif [[ $_left -le 60 ]]; then
             PS1="\[\033[1;31m\][NEXUS:LVL-${_NX_LVL}][⚠$(printf '%d:%02d' $_m $_s)]\[\033[0m\] \[\033[1;34m\]\w\[\033[0m\]\$ "
@@ -903,8 +1173,6 @@ if [[ "$_NX_TIMED" == "1" ]]; then
 
     PROMPT_COMMAND='_update_timer'
 
-    # Adaptive refresh: 1Hz in final 30s, 5Hz otherwise
-    # SIGWINCH forces readline to redraw prompt without blocking input
     _MY_PID=$$
     (
         while kill -0 "$_MY_PID" 2>/dev/null; do
@@ -947,14 +1215,10 @@ hint() {
     fi
 }
 
-# [TIME AUTHORITY] submit() re-validates epoch time independently.
-# PROMPT_COMMAND can miss fire if the shell is driven non-interactively or
-# the player finds a way to invoke submit without triggering prompt refresh.
-# This enforces time at the only point that matters: answer acceptance.
 submit() {
     [[ -z "${1:-}" ]] && { echo -e "\033[1;31mUsage: submit <password>\033[0m"; return 1; }
 
-    # Primary time enforcement — independent of PROMPT_COMMAND
+    # [TIME AUTHORITY] Validate epoch time at submission — independent of display
     if [[ "$_NX_TIMED" == "1" ]]; then
         local _sub_now; _sub_now=$(date +%s)
         local _sub_elapsed=$(( _sub_now - _NX_START ))
@@ -968,7 +1232,8 @@ submit() {
         fi
     fi
 
-    local stored; stored=$(cat "$_LD/.hash" 2>/dev/null)
+    # [UPGRADE UP-3/UP-4] Read hash from CORE_DIR with temporary unlock
+    local stored; stored=$(_read_core_shell "$_NX_CORE/$_NX_LVL.hash")
     local given;  given=$(echo -n "$1" | sha256sum | awk '{print $1}')
     local att; att=$(cat "$_LD/.attempts" 2>/dev/null || echo 0)
     att=$(( att + 1 ))
@@ -983,8 +1248,8 @@ submit() {
         exit 0
     else
         echo -e "\n\033[1;31m[✗] Incorrect. Attempt #${att}.\033[0m"
-        if   [[ ${#1} -lt 15 ]];     then echo -e "\033[2m  Tip: Passwords are 20 characters.\033[0m"
-        elif [[ ${#1} -gt 22 ]];     then echo -e "\033[2m  Tip: May have trailing newline — trim your output.\033[0m"
+        if   [[ ${#1} -lt 14 ]];     then echo -e "\033[2m  Tip: The password is longer than that.\033[0m"
+        elif [[ ${#1} -gt 30 ]];     then echo -e "\033[2m  Tip: May have extra characters — trim your output.\033[0m"
         elif [[ "$1" == *" "* ]];    then echo -e "\033[2m  Tip: Remove spaces — submit the raw value only.\033[0m"
         elif [[ $att -ge 3 ]];       then echo -e "\033[2m  Tip: Use 'hint' if you are stuck.\033[0m"
         fi; echo ""
@@ -992,18 +1257,30 @@ submit() {
 }
 
 score() {
-    source "$_NX_DIR/save/state" 2>/dev/null
+    # [UPGRADE UP-5] Use safe parser instead of source inside game shell too
+    local _sc_lvl _sc_score _sc_ach
+    while IFS='=' read -r k v; do
+        v="${v%\"}"; v="${v#\"}"
+        case "$k" in
+            LEVEL) _sc_lvl="$v" ;;
+            SCORE) _sc_score="$v" ;;
+        esac
+    done < "$_NX_DIR/save/state" 2>/dev/null
     local h; h=$(wc -l < "$_NX_DIR/save/.hints" 2>/dev/null || echo 0)
-    echo -e "\n\033[1;37m  Score  : \033[1;32m${SCORE} pts"
-    echo -e "\033[1;37m  Level  : \033[1;33m${LEVEL} / 20"
+    echo -e "\n\033[1;37m  Score  : \033[1;32m${_sc_score:-0} pts"
+    echo -e "\033[1;37m  Level  : \033[1;33m${_sc_lvl:-01} / 20"
     echo -e "\033[1;37m  Hints  : \033[1;31m${h} used this level\033[0m\n"
 }
 
 achievements() {
-    source "$_NX_DIR/save/state" 2>/dev/null
+    local _ac_ach=""
+    while IFS='=' read -r k v; do
+        v="${v%\"}"; v="${v#\"}"
+        [[ "$k" == "ACHIEVEMENTS" ]] && _ac_ach="$v"
+    done < "$_NX_DIR/save/state" 2>/dev/null
     echo -e "\n\033[1;35m══ ACHIEVEMENTS ══\033[0m"
-    if [[ -z "${ACHIEVEMENTS:-}" ]]; then echo " None yet."; echo ""; return; fi
-    echo "$ACHIEVEMENTS" | tr '|' '\n' | grep ':' | cut -d: -f2- | \
+    if [[ -z "${_ac_ach:-}" ]]; then echo " None yet."; echo ""; return; fi
+    echo "$_ac_ach" | tr '|' '\n' | grep ':' | cut -d: -f2- | \
         while IFS= read -r a; do echo -e " 🏆  $a"; done
     echo ""
 }
@@ -1048,9 +1325,7 @@ RCEOF
     rm -f "$rc"
     _stop_level_server
 
-    # [BUG-4 FIX] Persist hint count back to state REGARDLESS of outcome.
-    # This blocks the session-split exploit where a player uses hints then
-    # exits without submitting to reset the .hints counter next entry.
+    # Persist hint count back to state regardless of outcome
     local final_hints; final_hints=$(wc -l < "$SAVE_DIR/.hints" 2>/dev/null || echo 0)
     eval "HINTS_L${lvl}=$final_hints"
     save_state
@@ -1076,9 +1351,6 @@ RCEOF
 # LEVEL COMPLETION
 # =============================================================================
 
-# [FIX-13] ACHIEVEMENT ORDER: LEVEL advanced FIRST, then achievements fired.
-# Previously: give_achievement called save_state with OLD level number.
-# Now: save records new level before any achievement side-effects.
 _complete_level() {
     local lvl="$1"
     local hints; hints=$(wc -l < "$SAVE_DIR/.hints" 2>/dev/null || echo 0)
@@ -1088,11 +1360,10 @@ _complete_level() {
     [[ $earned -lt 10 ]] && earned=10
     SCORE=$(( SCORE + earned ))
 
-    # Advance LEVEL before save/achievements — state records correct next level
+    # Advance LEVEL before achievements — save records correct next level
     local next=$(( 10#$lvl + 1 ))
     LEVEL=$(printf "%02d" $next)
 
-    # Level-specific achievements (keyed to completed level, not new LEVEL)
     case "$lvl" in
         "01") give_achievement "FIRST_BLOOD"       "First Blood — Level 1 cleared" ;;
         "05") give_achievement "FILE_READER"        "File Whisperer — Mastered file typing" ;;
@@ -1133,11 +1404,10 @@ _complete_level() {
 # COMMANDS
 # =============================================================================
 
-# [FIX-10] SIGINT trap — clean rollback if setup is interrupted
+# SIGINT trap — clean rollback if setup is interrupted
 _setup_abort() {
     echo ""
     pe "Setup interrupted — rolling back partial state..."
-    # [FIX-11] Guard before destructive removal
     if [[ -n "$GAME_DIR" && "$GAME_DIR" == "$HOME/.nexus" ]]; then
         rm -rf "$GAME_DIR"
     fi
@@ -1145,9 +1415,7 @@ _setup_abort() {
 }
 
 cmd_setup() {
-    # [FIX-10] Register cleanup trap before any work begins
     trap '_setup_abort' INT TERM
-
     banner
     pi "Initializing NEXUS v${VERSION}..."
 
@@ -1163,14 +1431,20 @@ cmd_setup() {
     command -v xxd     &>/dev/null || pw "xxd optional (L19) — apt install xxd"
     command -v strings &>/dev/null || pw "strings optional (L10/L19) — apt install binutils"
 
-    # [FIX-11] GAME_DIR safety guard — never execute rm -rf on unverified path
+    # GAME_DIR safety guard — never rm -rf on unverified path
     if [[ -z "$GAME_DIR" || "$GAME_DIR" != "$HOME/.nexus" ]]; then
-        pe "GAME_DIR safety check failed: '${GAME_DIR}' — aborting to prevent data loss"
+        pe "GAME_DIR safety check failed: '${GAME_DIR}' — aborting"
         exit 1
     fi
 
     rm -rf "$GAME_DIR"
-    mkdir -p "$LEVELS_DIR" "$SAVE_DIR"
+    mkdir -p "$LEVELS_DIR" "$SAVE_DIR" "$CORE_DIR"
+
+    # [UPGRADE UP-12] Create log directory with restricted permissions
+    mkdir -p "$GAME_DIR/logs"
+    chmod 700 "$GAME_DIR/logs"
+    touch "$GAME_DIR/logs/.cmdlog"
+    chmod 600 "$GAME_DIR/logs/.cmdlog"
 
     LEVEL="01"; SCORE=0; ACHIEVEMENTS=""; SPEEDRUN=0
     SR_START=""; SR_BEST=""; COMPLETED=0
@@ -1185,26 +1459,39 @@ cmd_setup() {
     pi "Constructing hardened terminals..."
     build_l01 "${PASSES[1]}"  && pg "BOOT_SECTOR      [01] ✓"
     build_l02 "${PASSES[2]}"  && pg "NEGATIVE_SPACE   [02] ✓"
-    build_l03 "${PASSES[3]}"  && pg "WHITESPACE       [03] ✓"
-    build_l04 "${PASSES[4]}"  && pg "SPECTER          [04] ✓"
-    build_l05 "${PASSES[5]}"  && pg "FORENSICS        [05] ✓"
-    build_l06 "${PASSES[6]}"  && pg "INTERCEPT        [06] ✓  [awk timestamps]"
-    build_l07 "${PASSES[7]}"  && pg "FREQUENCY        [07] ✓  [deterministic fill]"
-    build_l08 "${PASSES[8]}"  && pg "DECODE_ALPHA     [08] ✓"
-    build_l09 "${PASSES[9]}"  && pg "DECODE_BRAVO     [09] ✓  [hint3 fixed]"
-    build_l10 "${PASSES[10]}" && pg "PHANTOM_SIGNAL   [10] ✓"
-    build_l11 "${PASSES[11]}" && pg "THE_MAZE         [11] ✓"
-    build_l12 "${PASSES[12]}" && pg "DEEP_ARCHIVE     [12] ✓  [hint3 fixed]"
-    build_l13 "${PASSES[13]}" && pg "SETUID_HUNT      [13] ✓"
-    build_l14 "${PASSES[14]}" && pg "SIGNAL_DROP      [14] ✓"
-    build_l15 "${PASSES[15]}" && pg "DEAD_DROP        [15] ✓  [hint3 fixed]"
-    build_l16 "${PASSES[16]}" && pg "CRONTAB          [16] ✓"
+    build_l03 "${PASSES[3]}"  && pg "WHITESPACE       [03] ✓  [+extra decoy]"
+    build_l04 "${PASSES[4]}"  && pg "SPECTER          [04] ✓  [+lookalike decoys]"
+    build_l05 "${PASSES[5]}"  && pg "FORENSICS        [05] ✓  [+ASCII text trap]"
+    build_l06 "${PASSES[6]}"  && pg "INTERCEPT        [06] ✓  [+fake token lines]"
+    build_l07 "${PASSES[7]}"  && pg "FREQUENCY        [07] ✓"
+    build_l08 "${PASSES[8]}"  && pg "DECODE_ALPHA     [08] ✓  [+encoded decoy]"
+    build_l09 "${PASSES[9]}"  && pg "DECODE_BRAVO     [09] ✓  [+cipher decoy]"
+    build_l10 "${PASSES[10]}" && pg "PHANTOM_SIGNAL   [10] ✓  [+multiple strings]"
+    build_l11 "${PASSES[11]}" && pg "THE_MAZE         [11] ✓  [+deep decoy targets]"
+    build_l12 "${PASSES[12]}" && pg "DEEP_ARCHIVE     [12] ✓  [+decoy archive]"
+    build_l13 "${PASSES[13]}" && pg "SETUID_HUNT      [13] ✓  [+SGID trap]"
+    build_l14 "${PASSES[14]}" && pg "SIGNAL_DROP      [14] ✓  [portable nc]"
+    build_l15 "${PASSES[15]}" && pg "DEAD_DROP        [15] ✓  [+vault decoy]"
+    build_l16 "${PASSES[16]}" && pg "CRONTAB          [16] ✓  [+extra credential]"
     build_l17 "${PASSES[17]}" && pg "ENV_LEAK         [17] ✓"
-    build_l18 "${PASSES[18]}" && pg "WEB_OF_LIES      [18] ✓"
-    build_l19 "${PASSES[19]}" && pg "HEX_GHOST        [19] ✓"
-    build_l20 "${PASSES[20]}" && pg "PIPELINE         [20] ✓"
+    build_l18 "${PASSES[18]}" && pg "WEB_OF_LIES      [18] ✓  [+JSON readable trap]"
+    build_l19 "${PASSES[19]}" && pg "HEX_GHOST        [19] ✓  [+multiple fake strings]"
+    build_l20 "${PASSES[20]}" && pg "PIPELINE         [20] ✓  [+suspended admin decoy]"
 
-    # Restore default trap after successful setup
+    # [UPGRADE UP-11] Apply permission hardening AFTER all levels built
+    pi "Applying security hardening..."
+    chmod 700 "$CORE_DIR"
+    # Lock all core files to chmod 000 — only _read_core() can unlock temporarily
+    chmod 000 "$CORE_DIR/"*.hash 2>/dev/null
+    chmod 000 "$CORE_DIR/"*.plain 2>/dev/null
+    pg "Core storage locked (chmod 000)"
+
+    # [UPGRADE UP-13] Environment hardening — game dir not exported to child processes
+    # The GAME_DIR variable stays in parent shell scope, not inherited by game sub-shells
+    # .gi file provides scoped _NX_DIR without leaking GAME_DIR/CORE_DIR directly
+    chmod 700 "$GAME_DIR"   # Owner-only access to .nexus root
+    pg "Game directory access restricted (chmod 700)"
+
     trap - INT TERM
 
     echo ""
@@ -1216,14 +1503,11 @@ cmd_play() {
     [[ ! -d "$GAME_DIR" ]] && { pe "Not set up. Run: bash $0 setup"; exit 1; }
     load_state
 
-    # [FIX-12] SESSION ISOLATION: clear stale speedrun state on normal play entry.
-    # Without this, a completed/abandoned speedrun leaves SPEEDRUN=1 and a stale
-    # SR_START timestamp, causing normal completions to trigger false speedrun medals.
+    # SESSION ISOLATION: clear stale speedrun state on normal play entry
     if [[ "$SPEEDRUN" == "1" ]]; then
         SPEEDRUN=0; SR_START=""; save_state
     fi
 
-    # Parse flags: --timed activates timed mode for this session
     [[ "${2:-}" == "--timed" || "${TIMED_MODE:-0}" == "1" ]] && TIMED_MODE=1
 
     while true; do
@@ -1233,7 +1517,7 @@ cmd_play() {
 
         if [[ $lvl_int -gt $TOTAL_LEVELS ]]; then
             echo -e " ${Y}◆ ALL LEVELS COMPLETE${N}\n"
-            echo -e " ${W}[1]${N} Start SPEEDRUN MODE (new passwords, global timer)"
+            echo -e " ${W}[1]${N} Start SPEEDRUN MODE"
             echo -e " ${W}[2]${N} View achievements"
             echo -e " ${W}[3]${N} Export report"
             echo -e " ${W}[4]${N} Leaderboard"
@@ -1293,11 +1577,9 @@ _show_achievements_menu() {
 
 _start_speedrun() {
     pw "Starting SPEEDRUN — regenerating all passwords..."
-    # Save speedrun start time BEFORE setup wipes state
     local sr_ts; sr_ts=$(date +%s)
     cmd_setup
     load_state
-    # [FIX-12] Set speedrun flags explicitly after load — no leakage from prior state
     SPEEDRUN=1; SR_START="$sr_ts"; SCORE=0; LEVEL="01"
     save_state
     pg "Speedrun started. Timer running. Good luck."
@@ -1326,7 +1608,6 @@ cmd_status() {
     echo -e "  Score  : ${G}${SCORE} / ${max} pts${N}"
     echo -e "  Grade  : ${C}$(get_grade $SCORE)${N}"
     echo -e "  Medals : ${M}${ac}${N}"
-    # [FIX-14] Guard SR_START for empty string — prevents arithmetic on empty var
     [[ "$SPEEDRUN" == "1" && -n "$SR_START" ]] && {
         local e=$(( $(date +%s) - SR_START ))
         echo -e "  Sprint : ${R}⏱ $(( e/60 ))m $(( e%60 ))s running${N}"
@@ -1351,13 +1632,11 @@ cmd_leaderboard() {
     fi
     printf "  %-4s %-18s %-8s %-6s %s\n" "RANK" "OPERATIVE" "SCORE" "LVL" "DATE"
     echo   "  ──────────────────────────────────────────────────"
-    # [FIX-15] Score stored as integer — sort -k3 -rn is now correct for all values
     sort -t'|' -k3 -rn "$lb" | head -15 | \
         awk -F'|' '{printf "  %-4d %-18s %-8s %-6s %s\n", NR, $2, $3" pts", $4, $1}'
     echo ""
 }
 
-# [FIX-8] CONDITIONAL SKILLS — report reflects level reached, not hardcoded full list
 _skills_for_level() {
     local reached; reached=$(( 10#${1:-0} ))
     local -a map=(
@@ -1397,7 +1676,6 @@ cmd_report() {
     local grade; grade=$(get_grade "$SCORE")
     local lvl_reached=$(( 10#${LEVEL:-1} - 1 ))
     local outfile="$HOME/nexus_report_$(date +%Y%m%d_%H%M).txt"
-
     {
     cat << REPORT
 ╔═══════════════════════════════════════════════════════╗
@@ -1407,7 +1685,7 @@ cmd_report() {
 
   Operative   : $(whoami)
   Date        : $(date '+%Y-%m-%d %H:%M')
-  Version     : $VERSION (Integrity Enforced)
+  Version     : $VERSION (Maximum Hardened)
 
 ╔═══════════════════════════════════════════════════════╗
 ║  PERFORMANCE SUMMARY                                  ║
@@ -1417,26 +1695,21 @@ cmd_report() {
   Level       : $lvl_reached / $TOTAL_LEVELS completed
   Medals      : $ac achievements
 REPORT
-
     [[ -n "${SR_BEST:-}" ]] && \
         printf '  Best Speedrun : %dm %ds\n' "$(( SR_BEST/60 ))" "$(( SR_BEST%60 ))"
-
     cat << REPORT2
 
 ╔═══════════════════════════════════════════════════════╗
 ║  SKILLS DEMONSTRATED (levels reached only)           ║
 ╚═══════════════════════════════════════════════════════╝
 REPORT2
-
     _skills_for_level "$lvl_reached"
-
     cat << REPORT3
 
 ╔═══════════════════════════════════════════════════════╗
 ║  ACHIEVEMENTS UNLOCKED                               ║
 ╚═══════════════════════════════════════════════════════╝
 REPORT3
-
     if [[ -n "${ACHIEVEMENTS:-}" ]]; then
         echo "$ACHIEVEMENTS" | tr '|' '\n' | grep ':' | cut -d: -f2- | \
             while IFS= read -r a; do printf "  🏆  %s\n" "$a"; done
@@ -1445,16 +1718,12 @@ REPORT3
     fi
     echo ""
     echo "  — NEXUS WARGAME v${VERSION} — $(date +%Y)"
-
     } > "$outfile"
-
     pg "Report saved: $outfile"
-
     local lvl_int=$(( 10#${LEVEL:-1} ))
     if [[ $lvl_int -gt $TOTAL_LEVELS ]]; then
         read -rp "$(echo -e "${C}[?] Add to leaderboard? Operative name (Enter to skip): ${N}")" lname
         [[ -n "$lname" ]] && {
-            # [FIX-15] Store score as integer — no "pts" suffix in data field
             echo "$(date +%Y-%m-%d)|${lname}|${SCORE}|$(( lvl_int - 1 ))/20" \
                 >> "$SAVE_DIR/leaderboard.txt"
             pg "Added as '$lname'"
@@ -1463,7 +1732,8 @@ REPORT3
 }
 
 # =============================================================================
-# [NEW] cmd_verify — environment integrity check without rebuild
+# cmd_verify — environment integrity check without rebuild
+# [UPGRADE UP-3] Now checks CORE_DIR for .hash files instead of level dirs
 # =============================================================================
 cmd_verify() {
     [[ ! -d "$GAME_DIR" ]] && { pe "Not set up. Run: bash $0 setup"; exit 1; }
@@ -1471,29 +1741,34 @@ cmd_verify() {
     local ok=1 warn=0
     for i in $(seq -w 1 20); do
         local ldir="$LEVELS_DIR/level$i"
-        if [[ ! -f "$ldir/.hash" || ! -d "$ldir/challenge" ]]; then
-            pe "Level $i: MISSING or INCOMPLETE — run setup to rebuild"
-            ok=0
-        else
-            # Check .hash is non-empty and looks like sha256
-            local h; h=$(cat "$ldir/.hash" 2>/dev/null)
-            if [[ ${#h} -ne 64 ]]; then
-                pw "Level $i: hash file malformed"
-                warn=$(( warn + 1 ))
-            fi
+        local hfile="$CORE_DIR/$i.hash"
+        if [[ ! -d "$ldir/challenge" ]]; then
+            pe "Level $i: challenge directory MISSING — run setup to rebuild"
+            ok=0; continue
+        fi
+        if [[ ! -e "$hfile" ]]; then
+            pe "Level $i: hash file MISSING from core — run setup to rebuild"
+            ok=0; continue
+        fi
+        # Temporarily read hash to verify it's valid sha256
+        local h; h=$(_read_core "$hfile")
+        if [[ ${#h} -ne 64 ]]; then
+            pw "Level $i: hash malformed (len=${#h}, expected 64)"
+            warn=$(( warn + 1 ))
         fi
     done
-
     # State file check
     if [[ -f "$SAVE_DIR/state" ]]; then
-        load_state  # triggers checksum verification internally
+        load_state
         pg "State file: OK (checksum verified)"
     else
         pw "State file: not found (run 'play' to create)"
     fi
-
+    # Log directory check
+    [[ -d "$GAME_DIR/logs" ]] && pg "Log directory: present" \
+        || pw "Log directory: missing (will be created on next setup)"
     [[ $ok -eq 1 && $warn -eq 0 ]] && pg "All 20 levels verified. Environment is clean." \
-    || pw "Issues found above. Run: bash $0 setup to rebuild."
+        || pw "Issues found. Run: bash $0 setup to rebuild."
 }
 
 # =============================================================================
